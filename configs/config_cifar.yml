@@ -1,5 +1,5 @@
 project_name: "CTM_cifar10_testing"
-log_directory: "ImageNet64/lightning_logs"
+log_directory: "lightning_logs"
 mode: train # train | test | validate_all
 
 id:
@@ -22,9 +22,11 @@ training:
     accumulate_grad_batches: 18
     save_top_k: 3
     log_every_n_steps: 10
+    limit_val_batches:
+    limit_train_batches:
     validation_every_n_epochs: # ???
     val_check_interval: #1000
-    resume_from_checkpoint: /home/karchkhadze/ctm/ImageNet64/lightning_logs/CTM_cifar10_testing/2024-07-07T09-35-47_lpips_ctm_w_teacher/checkpoints/last.ckpt
+    resume_from_checkpoint: #lightning_logs/CTM_cifar10_testing/2024-07-07T09-35-47_lpips_ctm_w_teacher/checkpoints/last.ckpt
     devices: 
         # - 0
         # - 1
@@ -62,7 +64,7 @@ diffusion:
     start_scales: 18                                                            # cifar10 18  | Imagenet 40
     end_scales: 18                                                              # cifar10 18  | Imagenet 40
     distill_steps_per_iter: 50000                                               # only if scale_mode == "progdist"
-    teacher_model_path: ImageNet64/author_ckpt/edm-cifar10-32x32-uncond-vp.pkl  # ImageNet64/author_ckpt/edm_imagenet64_ema.pt
+    teacher_model_path: author_ckpt/edm-cifar10-32x32-uncond-vp.pkl  # ImageNet64/author_ckpt/edm_imagenet64_ema.pt
     model_path:                                                                 ## ??? not sure what is this
     training_mode: "ctm"                                                        ## do not change this!!!
     num_heun_step: 17                                                           # cifar10 17 IMagenet 39

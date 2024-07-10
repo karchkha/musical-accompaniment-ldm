@@ -45,21 +45,21 @@ def get_dataset(name, train):
             torchvision.transforms.ToTensor(),
             torchvision.transforms.Normalize((0.5,), (0.5)),
         ])
-        return torchvision.datasets.FashionMNIST(root=f'ImageNet64/dataset/{name}', train=train, download=True, transform=transform)
+        return torchvision.datasets.FashionMNIST(root=f'dataset/{name}', train=train, download=True, transform=transform)
     elif name == 'mnist':
         transform = torchvision.transforms.Compose([
             torchvision.transforms.Resize(32),
             torchvision.transforms.ToTensor(),
             torchvision.transforms.Normalize((0.5,), (0.5)),
         ])
-        return torchvision.datasets.MNIST(root=f'ImageNet64/dataset/{name}', train=train, download=True, transform=transform)
+        return torchvision.datasets.MNIST(root=f'dataset/{name}', train=train, download=True, transform=transform)
     elif name == 'cifar10':
         transform = torchvision.transforms.Compose([
             torchvision.transforms.RandomHorizontalFlip(),
             torchvision.transforms.ToTensor(),
             torchvision.transforms.Normalize((0.5,), (0.5)),
         ])
-        return torchvision.datasets.CIFAR10(root=f'ImageNet64/dataset/{name}', train=train, download=True, transform=transform)
+        return torchvision.datasets.CIFAR10(root=f'dataset/{name}', train=train, download=True, transform=transform)
     elif name == 'butterflies256':
         transform = torchvision.transforms.Compose([
             torchvision.transforms.Resize((32,32)),
@@ -67,7 +67,7 @@ def get_dataset(name, train):
             torchvision.transforms.ToTensor(),
             torchvision.transforms.Normalize((0.5,), (0.5)),
         ])
-        return get_butterflies256_dataset(root=f'ImageNet64/dataset/{name}', train=train, transform=transform)
+        return get_butterflies256_dataset(root=f'dataset/{name}', train=train, transform=transform)
 
 
     
