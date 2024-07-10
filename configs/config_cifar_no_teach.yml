@@ -1,0 +1,135 @@
+project_name: "CTM_cifar10_testing"
+log_directory: "ImageNet64/lightning_logs"
+mode: train # train | test
+
+id:
+  version: "ctm_no_teacher_____"
+  name: "lpips"
+
+
+# model:
+#     ema: True
+#     ema_rate: 0.999
+#     dropout: 0.0
+
+
+training:
+    batch_size: 2 #80 # 80 #512
+    precision: 32 #16-mixed
+    max_epochs: 1000
+    max_steps: 600000
+    warmup_epochs: 1
+    accumulate_grad_batches: 18
+    save_top_k: 3
+    log_every_n_steps: 10
+    validation_every_n_epochs: # ???
+    val_check_interval: #1000
+    resume_from_checkpoint:
+    devices: 
+        # - 0
+        # - 1
+        - 2    
+
+testing:
+    batch_size: 2 # 256
+    samples: 64
+    calc_inception: True
+    calc_fid: True
+
+data:
+    name: cifar10 # cifar10 | butterflies256 | mnist
+    num_workers: 4
+    img_resolution : 32
+    img_channels : 3
+    class_cond: False # if data_name == 'cifar10' Fasle else True
+
+optim:
+    grad_clip: null
+    weight_decay: 0
+    lr: 4.e-4
+    betas: [0.9,0.999]
+    eps: 1.e-8
+    amsgrad: False
+    optimizer : radam
+
+diffusion:
+    preconditioning: ctm # ctm | ct | vp | ve | edm
+
+    # cm_train_defaults
+    target_ema_mode: "fixed"                                                    # "fixed" | "adaptive" 
+    scale_mode: "fixed"                                                         # "fixed" | "progressive" | "progdist"
+    # total_training_steps: 600000
+    start_ema: 0.999
+    start_scales: 18                                                            # cifar10 18  | Imagenet 40
+    end_scales: 18                                                              # cifar10 18  | Imagenet 40
+    distill_steps_per_iter: 50000                                               # only if scale_mode == "progdist"
+    teacher_model_path: #ImageNet64/author_ckpt/edm-cifar10-32x32-uncond-vp.pkl  # ImageNet64/author_ckpt/edm_imagenet64_ema.pt
+    model_path:                                                                 ## ??? not sure what is this
+    training_mode: "ctm"                                                        ## do not change this!!!
+    num_heun_step: 17                                                           # cifar10 17 IMagenet 39
+    num_heun_step_random: True
+    loss_norm: "lpips"
+    use_fp16: False
+    ema_rate:
+        - 0.999
+        # - 0.9999
+    start_ema: 0.999
+    
+
+    # Network architecture
+    edm_nn_ncsn: False
+    edm_nn_ddpm: True                                                           # if data_name == 'cifar10' else False,
+    linear_probing: False       # ???
+    target_subtract: False
+
+    # model_and_diffusion_defaults
+    schedule_sampler: "uniform"                                                 # | "uniform" | "lognormal"
+    sigma_min: 0.002
+    sigma_max: 80.0
+    sigma_data: 0.5
+    rho: 7
+    weight_schedule: "uniform"
+    weight_schedule_multiplier: 1.
+    diffusion_weight_schedule: "karras_weight"
+    rescaling: False
+
+
+    # ctm_loss_defaults
+
+    # CTM hyperparams
+    consistency_weight: 1.0
+    time_continuous: False
+    heun_step_strategy: 'weighted'
+    heun_step_multiplier: 1.0
+    self_learn: True
+    self_learn_iterative: False
+    inner_parametrization: 'edm'
+    outer_parametrization: 'euler'
+    ctm_estimate_outer_type: 'target_model_sg'
+    ctm_estimate_inner_type: 'model'
+    ctm_target_matching: False
+    ctm_target_inner_type: 'model_sg'
+    sample_s_strategy: 'uniform'                                                # 'smallest' | 'uniform' 
+    
+    save_png: False
+    save_period: 0
+    
+
+    # DSM hyperparams
+    diffusion_training: True
+    apply_adaptive_weight: True
+    denoising_weight: 1.
+    diffusion_mult: 0.7
+    diffusion_schedule_sampler: "halflognormal" # ???
+    diffusion_training_frequency: 1.
+
+    ### eval defaults ???
+    large_log: False
+    check_ctm_denoising_ability: False
+    clip_output: True
+    clip_denoised: False
+    denoise_steps_to_log:
+        - 1
+        - 2
+
+
