@@ -55,6 +55,7 @@ optim:
     amsgrad: False
     optimizer : radam
 
+
 diffusion:
     preconditioning: ctm # ctm | ct | vp | ve | edm
 

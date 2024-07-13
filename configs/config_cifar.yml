@@ -3,7 +3,7 @@ log_directory: "lightning_logs"
 mode: train # train | test | validate_all
 
 id:
-  version: "ctm_w_teacher"
+  version: "ctm_w_teacher_adaptive_true"
   name: "lpips"
 
 
@@ -14,12 +14,12 @@ id:
 
 
 training:
-    batch_size: 80 #512
+    batch_size: 75 #512
     precision: 32 #16-mixed
     max_epochs: 1000
     max_steps: 600000
     warmup_epochs: 1
-    accumulate_grad_batches: 18
+    accumulate_grad_batches: 19
     save_top_k: 3
     log_every_n_steps: 10
     limit_val_batches:

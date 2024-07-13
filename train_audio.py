@@ -1,0 +1,163 @@
+import yaml
+import argparse
+import importlib
+import audio_diffusion_pytorch
+
+from main.module_base import Model, DatamoduleWithValidation, MultiSourceSampleLogger
+from main.data import MultiSourceDataset
+import pytorch_lightning as pl
+import click
+import os
+import datetime
+import numpy as np
+from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.utilities.rank_zero import rank_zero_only
+from pytorch_lightning.callbacks import ModelCheckpoint
+
+
+@rank_zero_only
+def create_directories(path):
+    '''
+    Makes sure to create directoris for only process 0 in multi-GPU scenarios
+    '''
+    os.makedirs(path, exist_ok=True)
+
+def dict2namespace(config):
+    namespace = argparse.Namespace()
+    for key, value in config.items():
+        if isinstance(value, dict):
+            new_value = dict2namespace(value)
+        else:
+            new_value = value
+        setattr(namespace, key, new_value)
+    return namespace
+
+# def instantiate_from_config(config):
+#     # Get the module and class from the configuration
+#     module_path, class_name = config._target_.rsplit('.', 1)
+#     module = importlib.import_module(module_path)
+#     cls = getattr(module, class_name)
+    
+#     # Remove _target_ from the config dictionary and instantiate the object
+#     config_dict = vars(config)
+#     config_dict.pop('_target_')
+#     return cls(**config_dict)
+
+def instantiate_from_config(config, **kwargs):
+    if isinstance(config, argparse.Namespace):
+        config = vars(config)
+    
+    module_path, class_name = config['_target_'].rsplit('.', 1)
+    module = importlib.import_module(module_path)
+    cls = getattr(module, class_name)
+    
+    # Remove _target_ from the config dictionary and instantiate the object
+    config_dict = {k: v for k, v in config.items() if k != '_target_'}
+    return cls(**config_dict, **kwargs)
+
+@click.command()
+@click.option('--cfg', default='exp/train_msdm_alt.yaml', help='Configuration File')
+def main(cfg):
+    config = yaml.load(open(cfg, 'r'), Loader=yaml.FullLoader)
+    with open(cfg, "r") as f:
+        cfg = yaml.safe_load(f)
+        cfg = dict2namespace(cfg)
+
+    log_path = cfg.log_directory
+    create_directories(log_path)
+
+    # adding a random number of seconds so that exp folder names coincide less often
+    random_seconds_shift = datetime.timedelta(seconds=np.random.randint(60))
+    now = (datetime.datetime.now() - random_seconds_shift).strftime('%Y-%m-%dT%H-%M-%S')
+    nowname = "%s_%s_%s" % (
+        now,
+        cfg.id.name,
+        cfg.id.version,
+        # int(time.time())
+    )
+
+    print("\nName of the run is:", nowname, "\n")
+
+    run_path = os.path.join(
+        log_path,
+        cfg.project_name,
+        nowname,
+    )
+
+    create_directories(run_path)
+
+    wandb_logger = WandbLogger(
+        save_dir=run_path,
+        # version=nowname,
+        project= cfg.project_name,
+        config=config,
+        name=nowname,
+        entity='tornike_karchkha',
+    )
+    wandb_logger._project = ""  # prevent naming experiment nama 2 time in logginf vals
+
+    checkpoint_path = os.path.join(
+        log_path,
+        cfg.project_name,
+        nowname,
+        "checkpoints",
+    )
+    create_directories(checkpoint_path)
+
+    ckpt_callback = ModelCheckpoint(
+        dirpath=checkpoint_path,
+        save_top_k=1,
+        monitor="valid_loss",
+        save_last=True,
+        filename='{epoch}-{val_loss:.4f}',
+        every_n_train_steps=None
+    )
+
+    callbacks = [ckpt_callback]
+
+    # # Init Model
+    # diffusion_sigma_distribution = audio_diffusion_pytorch.LogNormalDistribution(**vars(cfg.diffusion_sigma_distribution))
+    # model = Model(**vars(cfg.model), diffusion_sigma_distribution = diffusion_sigma_distribution)
+
+    # Init Model
+    diffusion_sigma_distribution = instantiate_from_config(cfg.diffusion_sigma_distribution)
+    model = instantiate_from_config(cfg.model, diffusion_sigma_distribution = diffusion_sigma_distribution)
+
+    # init datasets
+    train_dataset = instantiate_from_config(cfg.train_dataset)
+    validation_dataset = instantiate_from_config(cfg.val_dataset)
+
+    # Instantiate the datamodule
+    datamodule = DatamoduleWithValidation(train_dataset = train_dataset,
+                                        val_dataset = validation_dataset,
+                                            **vars(cfg.datamodule),
+                                        )
+
+
+    ### Init Sampler
+    diffusion_sampler = instantiate_from_config(cfg.diffusion_sampler)
+    diffusion_schedule = instantiate_from_config(cfg.diffusion_schedule)
+    audio_samples_logger = instantiate_from_config(cfg.audio_samples_logger, diffusion_sampler = diffusion_sampler, diffusion_schedule = diffusion_schedule)
+
+    callbacks.append(audio_samples_logger)
+
+    # Initialize all callbacks (e.g. fancy modelsummary and progress bar)
+    if "callbacks" in cfg:
+        for _, cb_conf in vars(cfg.callbacks).items():
+            if "_target_" in cb_conf:
+                callbacks.append(instantiate_from_config(cb_conf))
+
+    # Initialize trainer
+    trainer = pl.Trainer(**vars(cfg.trainer), callbacks=callbacks, logger=wandb_logger)
+
+    # Start training
+    if cfg.mode in ["test", "validate"]:
+        # Evaluation / Validation
+        trainer.validate(model, datamodule.val_dataloader(), ckpt_path = cfg.resume_from_checkpoint)
+    elif cfg.mode == "train":
+        trainer.fit(model, datamodule, ckpt_path = cfg.resume_from_checkpoint)
+
+
+
+if __name__ == '__main__':
+    main()
