@@ -33,52 +33,52 @@ def get_duration_sec(file, cache=False):
         return duration
 
 
-def load_audio(file, sr, offset, duration, resample=True, approx=False, time_base="samples", check_duration=True):
-    resampler = None
-    if time_base == "sec":
-        offset = offset * sr
-        duration = duration * sr
-    # Loads at target sr, stereo channels, seeks from offset, and stops after duration
-    if not os.path.exists(file):
-        return np.zeros((2, duration), dtype=np.float32), sr
-    container = av.open(file)
-    audio = container.streams.get(audio=0)[0]  # Only first audio stream
-    audio_duration = audio.duration * float(audio.time_base)
-    if approx:
+# def load_audio(file, sr, offset, duration, resample=True, approx=False, time_base="samples", check_duration=True):
+#     resampler = None
+#     if time_base == "sec":
+#         offset = offset * sr
+#         duration = duration * sr
+#     # Loads at target sr, stereo channels, seeks from offset, and stops after duration
+#     if not os.path.exists(file):
+#         return np.zeros((2, duration), dtype=np.float32), sr
+#     container = av.open(file)
+#     audio = container.streams.get(audio=0)[0]  # Only first audio stream
+#     audio_duration = audio.duration * float(audio.time_base)
+#     if approx:
 
-        if offset + duration > audio_duration * sr:
-            # Move back one window. Cap at audio_duration
-            offset = min(audio_duration * sr - duration, offset - duration)
-    else:
-        if check_duration:
-            assert (
-                    offset + duration <= audio_duration * sr
-            ), f"End {offset + duration} beyond duration {audio_duration*sr}"
-    if resample:
-        resampler = av.AudioResampler(format="fltp", layout="stereo", rate=sr)
-    else:
-        assert sr == audio.sample_rate
-    offset = int(
-        offset / sr / float(audio.time_base)
-    )  # int(offset / float(audio.time_base)) # Use units of time_base for seeking
-    duration = int(duration)  # duration = int(duration * sr) # Use units of time_out ie 1/sr for returning
-    sig = np.zeros((2, duration), dtype=np.float32)
-    container.seek(offset, stream=audio)
-    total_read = 0
-    for frame in container.decode(audio=0):  # Only first audio stream
-        if resample:
-            frame.pts = None
-            frame = resampler.resample(frame)
-        frame = frame[0].to_ndarray(format="fltp")  # Convert to floats and not int16
-        read = frame.shape[-1]
-        if total_read + read > duration:
-            read = duration - total_read
-        sig[:, total_read : total_read + read] = frame[:, :read]
-        total_read += read
-        if total_read == duration:
-            break
-    assert total_read <= duration, f"Expected {duration} frames, got {total_read}"
-    return sig, sr
+#         if offset + duration > audio_duration * sr:
+#             # Move back one window. Cap at audio_duration
+#             offset = min(audio_duration * sr - duration, offset - duration)
+#     else:
+#         if check_duration:
+#             assert (
+#                     offset + duration <= audio_duration * sr
+#             ), f"End {offset + duration} beyond duration {audio_duration*sr}"
+#     if resample:
+#         resampler = av.AudioResampler(format="fltp", layout="stereo", rate=sr)
+#     else:
+#         assert sr == audio.sample_rate
+#     offset = int(
+#         offset / sr / float(audio.time_base)
+#     )  # int(offset / float(audio.time_base)) # Use units of time_base for seeking
+#     duration = int(duration)  # duration = int(duration * sr) # Use units of time_out ie 1/sr for returning
+#     sig = np.zeros((2, duration), dtype=np.float32)
+#     container.seek(offset, stream=audio)
+#     total_read = 0
+#     for frame in container.decode(audio=0):  # Only first audio stream
+#         if resample:
+#             frame.pts = None
+#             frame = resampler.resample(frame)
+#         frame = frame[0].to_ndarray(format="fltp")  # Convert to floats and not int16
+#         read = frame.shape[-1]
+#         if total_read + read > duration:
+#             read = duration - total_read
+#         sig[:, total_read : total_read + read] = frame[:, :read]
+#         total_read += read
+#         if total_read == duration:
+#             break
+#     assert total_read <= duration, f"Expected {duration} frames, got {total_read}"
+#     return sig, sr
 
 def _identity(x):
   return x
@@ -284,40 +284,77 @@ class TracksDataset(Dataset):
         offset = offset - start
         return index, offset
 
+    # def get_song_chunk(self, index, offset):
+    #     track_name, total_length = self.tracks[index], self.durations[index]
+
+    #     for stem_index, stem in enumerate(self.stems):
+
+    #         # Randomly select a stem
+    #         stem_index = random.randint(0, len(self.stems) - 1)
+    #         stem = self.stems[stem_index]            
+
+    #         if not os.path.exists(os.path.join(self.audio_files_dir, track_name, f'{stem}.wav')):
+    #             data = np.zeros((1, self.sample_length), dtype=np.float32)
+    #             sr = self.sr
+    #         else:
+    #             data, sr = torchaudio.load(os.path.join(self.audio_files_dir, track_name, f'{stem}.wav'),
+    #                                    frame_offset=int(offset), num_frames =self.sample_length) 
+
+    #         assert data.shape == (
+    #             self.channels,
+    #             self.sample_length,
+    #         ), f"Expected {(self.channels, self.sample_length)}, got {data.shape}"
+
+    #         if data.shape == (self.channels, self.sample_length):
+    #             break
+
+    #     # Create a one-hot vector for the class index
+    #     one_hot_vector = np.zeros(len(self.stems), dtype=np.float32)
+    #     one_hot_vector[stem_index] = 1.0
+
+    #     return np.array(data),  one_hot_vector #np.random.rand(1,8) #np.array(stem_index) #one_hot_vector
+
+
     def get_song_chunk(self, index, offset):
         track_name, total_length = self.tracks[index], self.durations[index]
+        stem_data = []
 
-        for stem_index, stem in enumerate(self.stems):
-
-            # Randomly select a stem
-            stem_index = random.randint(0, len(self.stems) - 1)
-            stem = self.stems[stem_index]            
-
-            if not os.path.exists(os.path.join(self.audio_files_dir, track_name, f'{stem}.wav')):
+        # Load all stems
+        for stem in self.stems:
+            stem_path = os.path.join(self.audio_files_dir, track_name, f'{stem}.wav')
+            
+            if not os.path.exists(stem_path):
                 data = np.zeros((1, self.sample_length), dtype=np.float32)
                 sr = self.sr
             else:
-                data, sr = torchaudio.load(os.path.join(self.audio_files_dir, track_name, f'{stem}.wav'),
-                                       frame_offset=int(offset), num_frames =self.sample_length) 
-
+                data, sr = torchaudio.load(stem_path, frame_offset=int(offset), num_frames=self.sample_length)
+            
             assert data.shape == (
                 self.channels,
                 self.sample_length,
-            ), f"Expected {(self.channels, self.sample_length)}, got {data.shape}"
+                ), f"Expected {(self.channels, self.sample_length)}, got {data.shape}"
 
-            if data.shape == (self.channels, self.sample_length):
-                break
+            stem_data.append(data)
+
+        # Stack the stems and calculate the mix
+        stem_data = np.stack(stem_data)
+        # mix = np.sum(stem_data, axis=0)
+        
+        # Randomly select a stem
+        stem_index = random.randint(0, len(self.stems) - 1)
+        selected_stem = stem_data[stem_index]
 
         # Create a one-hot vector for the class index
         one_hot_vector = np.zeros(len(self.stems), dtype=np.float32)
         one_hot_vector[stem_index] = 1.0
 
-        return np.array(data),  one_hot_vector #np.random.rand(1,8) #np.array(stem_index) #one_hot_vector
+        return np.array(selected_stem), one_hot_vector, stem_data
+
 
     def get_item(self, item):
         index, offset = self.get_index_offset(item)
-        wav, clasa_idx = self.get_song_chunk(index, offset)
-        return self.transform(torch.from_numpy(wav)), torch.from_numpy(clasa_idx)
+        wav, clasa_idx, stem_data = self.get_song_chunk(index, offset)
+        return self.transform(torch.from_numpy(wav)), torch.from_numpy(clasa_idx), self.transform(torch.from_numpy(stem_data))
 
     def __len__(self):
         return int(np.floor(self.cumsum[-1] / self.sample_length))

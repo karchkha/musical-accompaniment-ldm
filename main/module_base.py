@@ -10,6 +10,7 @@ from pytorch_lightning import Callback, Trainer
 from pytorch_lightning.loggers import WandbLogger #LoggerCollection, WandbLogger
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
+from torchmetrics.audio import ScaleInvariantSignalNoiseRatio, ScaleInvariantSignalDistortionRatio
 
 """ Model """
 
@@ -53,7 +54,7 @@ class Model(pl.LightningModule):
 
 class Audio_DM_Model(pl.LightningModule):
     def __init__(
-        self, learning_rate: float, beta1: float, beta2: float, class_cond: bool, *args, **kwargs
+        self, learning_rate: float, beta1: float, beta2: float, class_cond: bool, separation: bool = False, *args, **kwargs
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -62,6 +63,7 @@ class Audio_DM_Model(pl.LightningModule):
         self.beta2 = beta2
 
         self.class_cond = class_cond
+        self.separation = separation
 
         # if self.class_cond:
         #     self.model = AudioDiffusionConditional(*args, **kwargs)
@@ -81,55 +83,66 @@ class Audio_DM_Model(pl.LightningModule):
         return optimizer
 
     def get_input(self, batch):
-        if isinstance(batch, (list, tuple)) and len(batch) == 2 and self.class_cond:
-            waveforms, class_indexes = batch
-        elif isinstance(batch, (list, tuple)) and len(batch) == 2:
-            waveforms, _ = batch
-            class_indexes = None            
+
+        if isinstance(batch, (list, tuple)) and self.class_cond and self.separation:
+            waveforms, class_indexes, stems  = batch
+
+            batch_size, channels, feature_width = waveforms.shape
+            mixture = stems.sum(1)
+
+            # Desired output sizes for each layer
+            target_sizes = [262144, 4096, 1024, 256, 128, 64, 32]  # TODO: this needs to be caclulated automaticaly somehow
+
+            # Create downscaled versions of waveforms using interpolation
+            channels_list = []
+            for size in target_sizes:
+                if feature_width == size:
+                    # No need to resize if the current size matches the target
+                    channels_list.append(mixture)
+                else:
+                    # Resize waveform to the target size
+                    resized_mixture = F.interpolate(mixture, size=(size,), mode='linear', align_corners=False)
+                    channels_list.append(resized_mixture)
+                    # feature_width = size  # Update current length for the next iteration
+
+
+            # Adjust channel dimensions to match `context_channels`
+            # This involves expanding the channel dimension after downsampling
+            channels_list = [
+                torch.cat([channels_list[i]] * num, dim=1) if num != channels_list[i].shape[1]
+                else channels_list[i]
+                for i, num in enumerate([1, 512, 1024, 1024, 1024, 1024, 1024])
+            ]
+
+            # embedding = torch.randn(2, 4, 32).to(self.device)
+            embedding = None
+
+            
+        elif isinstance(batch, (list, tuple)) and self.class_cond:
+            waveforms, class_indexes, _ = batch
+            channels_list = None
+            embedding = None
+        elif isinstance(batch, (list, tuple)) :
+            waveforms, _, _= batch
+            class_indexes = None
+            channels_list = None  
+            embedding = None          
         else:
             waveforms = batch
             class_indexes = None
-        return waveforms, class_indexes
+            channels_list = None
+            embedding = None
+        return waveforms, class_indexes, channels_list, embedding
 
     def training_step(self, batch, batch_idx):
-        waveforms, class_indexes = self.get_input(batch)
-
-
-        # batch_size, channels, feature_width = waveforms.shape
-
-        # # Desired output sizes for each layer
-        # target_sizes = [262144, 4096, 1024, 256, 128, 64, 32]
-
-        # # Create downscaled versions of waveforms using interpolation
-        # channels_list = []
-        # for size in target_sizes:
-        #     if feature_width == size:
-        #         # No need to resize if the current size matches the target
-        #         channels_list.append(waveforms)
-        #     else:
-        #         # Resize waveform to the target size
-        #         resized_waveform = F.interpolate(waveforms, size=(size,), mode='linear', align_corners=False)
-        #         channels_list.append(resized_waveform)
-        #         feature_width = size  # Update current length for the next iteration
-
-
-        # # Adjust channel dimensions to match `context_channels`
-        # # This involves expanding the channel dimension after downsampling
-        # channels_list = [
-        #     torch.cat([channels_list[i]] * num, dim=1) if num != channels_list[i].shape[1]
-        #     else channels_list[i]
-        #     for i, num in enumerate([1, 512, 1024, 1024, 1024, 1024, 1024])
-        # ]
-
-        # embedding = torch.randn(2, 4, 32).to(self.device)
-
-        loss = self.model(waveforms, features = class_indexes, channels_list=None, embedding = None)
+        waveforms, class_indexes, channels_list, embedding = self.get_input(batch)
+        loss = self.model(waveforms, features = class_indexes, channels_list=channels_list, embedding = embedding)
         self.log("train_loss", loss)
         return loss
 
     def validation_step(self, batch, batch_idx):
-        waveforms, class_indexes = self.get_input(batch)
-        loss = self.model(waveforms, features = class_indexes)
+        waveforms, class_indexes, channels_list, embedding = self.get_input(batch)
+        loss = self.model(waveforms, features = class_indexes, channels_list=channels_list, embedding = embedding)
         self.log("valid_loss", loss)
         return loss
 
@@ -430,5 +443,148 @@ class ClassCondTrackSampleLogger(SampleLogger):
         #                 sample_rate=self.sampling_rate,
         #             ) for idx in range(self.num_items)
         #         })
+        if is_train:
+            pl_module.train()
+            
+
+def sisnr(preds: torch.Tensor, target: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    alpha = (torch.sum(preds * target, dim=-1, keepdim=True) + eps) / (torch.sum(target**2, dim=-1, keepdim=True) + eps)
+    target_scaled = alpha * target
+    noise = target_scaled - preds
+    s_target = torch.sum(target_scaled**2, dim=-1) + eps
+    s_error = torch.sum(noise**2, dim=-1) + eps
+    return 10 * torch.log10(s_target / s_error)
+
+
+
+class ClassCondSeparateTrackSampleLogger(SampleLogger):
+    def __init__(
+        self,
+        num_items: int,
+        channels: int,
+        sampling_rate: int,
+        length: int,
+        sampling_steps: List[int],
+        diffusion_schedule: Schedule,
+        diffusion_sampler: Sampler,
+        stems: List[str]
+    ) -> None:
+        super().__init__(
+            num_items=num_items,
+            channels=channels,
+            sampling_rate=sampling_rate,
+            length=length,
+            sampling_steps=sampling_steps,
+            diffusion_schedule=diffusion_schedule,
+            diffusion_sampler=diffusion_sampler,
+        )
+        self.stems = stems
+        
+        torch_si_snr = ScaleInvariantSignalNoiseRatio()
+        torch_si_sdr = ScaleInvariantSignalDistortionRatio()
+
+    @torch.no_grad()
+    def log_sample(self, trainer, pl_module, batch):
+        is_train = pl_module.training
+        if is_train:
+            pl_module.eval()
+
+        wandb_logger = get_wandb_logger(trainer).experiment
+        model = pl_module.model
+
+        # Extract mixture and original audio from the batch
+        waveforms, class_indexes, channels_list, embedding = pl_module.get_input(batch)
+
+        # Get start diffusion noise for whole batch
+        noise = torch.randn(
+            (waveforms.size(0), self.channels, self.length), device=pl_module.device
+        )
+
+        # Dictionary to store generated samples
+        generated_samples = {stem: {} for stem in self.stems}
+        
+        
+        # Iterate over each diffusion step size
+        for steps in self.sampling_steps:
+            # Iterate over each one-hot encoded feature vector (each stem)
+            for i, stem in enumerate(self.stems):
+                # Create a feature tensor for the current stem for all items
+                current_features = torch.zeros(waveforms.size(0), len(self.stems)).to(pl_module.device)
+                current_features[:, i] = 1  # Set the current stem feature to 1 (one-hot)
+
+                # Sample from the model using the noise and the current one-hot features
+                samples = model.sample(
+                    noise=noise,
+                    features=current_features,
+                    sampler=self.diffusion_sampler,
+                    sigma_schedule=self.diffusion_schedule,
+                    num_steps=steps,
+                    channels_list=channels_list
+                )
+                samples = rearrange(samples, "b c t -> b t c").detach().cpu().numpy()
+
+                # Store the generated samples
+                for idx in range(waveforms.size(0)):
+                    if steps not in generated_samples[stem]:
+                        generated_samples[stem][steps] = []
+                    generated_samples[stem][steps].append(samples[idx])
+
+        # get original stems
+        original_samples = {stem: {} for stem in self.stems}
+        
+        original_stems = batch[2]
+        
+        for i, stem in enumerate(self.stems):
+            stem_data = original_stems[:, i]
+            stem_data =rearrange(stem_data, "b c t -> b t c") .detach().cpu().numpy()
+            original_samples[stem] = []
+            for idx in range(waveforms.size(0)):
+                original_samples[stem].append(stem_data[idx])            
+        
+        
+        # Log the first item of the batch
+        for idx in range(self.num_items):
+            # Prepare the logging data
+            logging_data = {}
+            
+            mixture_audio = channels_list[0][idx, 0, :].detach().cpu().numpy()[..., np.newaxis]
+
+            # Prepare the original mixture log
+            logging_data[f"Mixture_audio"] = wandb.Audio(
+                mixture_audio, 
+                caption=f"Mixture Audio {idx}", 
+                sample_rate=self.sampling_rate
+            )
+
+            # Prepare the original stems logs
+            for stem in self.stems:
+                original_audio = original_samples[stem][idx]
+                logging_data[f"original_{stem}"] = wandb.Audio(
+                    original_audio,
+                    caption=f"Original {stem} Audio {idx}",
+                    sample_rate=self.sampling_rate
+                )
+
+            # Prepare each generated sample for the current stem by number of steps
+            for steps in self.sampling_steps:
+                for stem in self.stems:
+                    generated_audio = generated_samples[stem][steps][idx]
+                    logging_data[f"generated_{stem}_steps_{steps}"] = wandb.Audio(
+                        generated_audio,
+                        caption=f"{stem} Sampled in {steps} steps (idx: {idx})",
+                        sample_rate=self.sampling_rate
+                    )
+
+                # Prepare the mixture of the generated samples
+                mix_audio = sum(generated_samples[stem][steps][idx] for stem in self.stems)
+                logging_data[f"generated_mix_steps_{steps}"] = wandb.Audio(
+                    mix_audio,
+                    caption=f"Sampled in {steps} steps (Mix) (idx: {idx})",
+                    sample_rate=self.sampling_rate
+                )
+
+            # Log all accumulated data
+            wandb_logger.log(logging_data, step = trainer.global_step+idx)
+            
         if is_train:
             pl_module.train()

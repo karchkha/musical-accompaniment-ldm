@@ -1,11 +1,11 @@
 # @package _global_
 
 project_name: "MSDM"
-log_directory: "lightning_logs"
+log_directory: "lightning_logs/tests"
 mode: train # train | test | validate_all
 
 id:
-  version: "Testing_audiodm_uncond"
+  version: "Testing_audiodm_uncond_____"
   name: ""
 
 model:
@@ -43,7 +43,7 @@ diffusion_sigma_distribution:
 
 train_dataset:
   _target_: main.data.TracksDataset
-  audio_files_dir: "/home/karchkhadze/multi-source-diffusion-models/data/slakh2100/train"
+  audio_files_dir: "dataset/slakh2100/train"
   sr: 22050
   channels: 1
   min_duration: 12.0
@@ -54,7 +54,7 @@ train_dataset:
 
 val_dataset:
   _target_: main.data.TracksDataset
-  audio_files_dir: "/home/karchkhadze/multi-source-diffusion-models/data/slakh2100/validation"
+  audio_files_dir: "dataset/slakh2100/validation"
   sr: 22050
   channels: 1
   min_duration: 12.0
@@ -64,8 +64,8 @@ val_dataset:
   stems: ['bass', 'drums', 'guitar', 'piano']
 
 datamodule:
-  batch_size: 32 #50
-  num_workers: 4
+  batch_size: 2 #50
+  num_workers: 1
   pin_memory: True
 
 
@@ -102,16 +102,17 @@ callbacks:
 
 trainer:
   accelerator: cuda
-  devices: [2] # Set `1` to train on GPU, `0` to train on CPU only, and `-1` to train on all GPUs, default `0`
+  devices: [0] # Set `1` to train on GPU, `0` to train on CPU only, and `-1` to train on all GPUs, default `0`
   precision: "bf16" # Precision used for tensors, default `32`
   min_epochs: 0
-  max_epochs: -1
+  max_epochs: 2
   enable_model_summary: False
   log_every_n_steps: 10 # Logs metrics every N batches
   check_val_every_n_epoch: null
-  val_check_interval: 4000
-  limit_val_batches: 
-  limit_train_batches:
+  val_check_interval: 
+  limit_val_batches: 2
+  limit_train_batches: 2
   strategy: ddp
+  num_sanity_val_steps: 0
 
-resume_from_checkpoint: msdm_logs/lightning_logs/MSDM/2024-07-12T18-48-41__Testing_audiodm_uncond/6i4ohwf1/checkpoints/epoch=44-step=28000.ckpt
+resume_from_checkpoint:

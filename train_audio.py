@@ -56,7 +56,7 @@ def instantiate_from_config(config, **kwargs):
     return cls(**config_dict, **kwargs)
 
 @click.command()
-@click.option('--cfg', default='exp/train_msdm_alt.yaml', help='Configuration File')
+@click.option('--cfg', default='configs/train_audiodm_conditional.yaml', help='Configuration File')
 def main(cfg):
     config = yaml.load(open(cfg, 'r'), Loader=yaml.FullLoader)
     with open(cfg, "r") as f:
