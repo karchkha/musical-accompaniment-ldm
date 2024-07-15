@@ -43,7 +43,7 @@ diffusion_sigma_distribution:
 
 train_dataset:
   _target_: main.data.TracksDataset
-  audio_files_dir: "/home/karchkhadze/multi-source-diffusion-models/data/slakh2100/train"
+  audio_files_dir: "dataset/slakh2100/train"
   sr: 22050
   channels: 1
   min_duration: 12.0
@@ -54,7 +54,7 @@ train_dataset:
 
 val_dataset:
   _target_: main.data.TracksDataset
-  audio_files_dir: "/home/karchkhadze/multi-source-diffusion-models/data/slakh2100/validation"
+  audio_files_dir: "dataset/slakh2100/validation"
   sr: 22050
   channels: 1
   min_duration: 12.0
@@ -64,7 +64,7 @@ val_dataset:
   stems: ['bass', 'drums', 'guitar', 'piano']
 
 datamodule:
-  batch_size: 32 #50
+  batch_size: 50
   num_workers: 4
   pin_memory: True
 
@@ -110,8 +110,8 @@ trainer:
   log_every_n_steps: 10 # Logs metrics every N batches
   check_val_every_n_epoch: null
   val_check_interval: 4000
-  limit_val_batches: 
+  limit_val_batches:
   limit_train_batches:
   strategy: ddp
 
-resume_from_checkpoint: msdm_logs/lightning_logs/MSDM/2024-07-12T18-48-41__Testing_audiodm_uncond/6i4ohwf1/checkpoints/epoch=44-step=28000.ckpt
+resume_from_checkpoint: lightning_logs/MSDM/2024-07-12T22-47-15__Testing_audiodm_uncond/checkpoints/last.ckpt

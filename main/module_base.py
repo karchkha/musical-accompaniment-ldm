@@ -137,13 +137,13 @@ class Audio_DM_Model(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         waveforms, class_indexes, channels_list, embedding = self.get_input(batch)
         loss = self.model(waveforms, features = class_indexes, channels_list=channels_list, embedding = embedding)
-        self.log("train_loss", loss)
+        self.log("train_loss", loss, sync_dist=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
         waveforms, class_indexes, channels_list, embedding = self.get_input(batch)
         loss = self.model(waveforms, features = class_indexes, channels_list=channels_list, embedding = embedding)
-        self.log("valid_loss", loss)
+        self.log("valid_loss", loss, sync_dist=True)
         return loss
 
 
@@ -184,7 +184,7 @@ class DatamoduleWithValidation(pl.LightningDataModule):
             batch_size=self.batch_size,
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
-            shuffle=False,
+            shuffle=True,
         )
 
 
@@ -447,14 +447,6 @@ class ClassCondTrackSampleLogger(SampleLogger):
             pl_module.train()
             
 
-def sisnr(preds: torch.Tensor, target: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
-    alpha = (torch.sum(preds * target, dim=-1, keepdim=True) + eps) / (torch.sum(target**2, dim=-1, keepdim=True) + eps)
-    target_scaled = alpha * target
-    noise = target_scaled - preds
-    s_target = torch.sum(target_scaled**2, dim=-1) + eps
-    s_error = torch.sum(noise**2, dim=-1) + eps
-    return 10 * torch.log10(s_target / s_error)
-
 
 
 class ClassCondSeparateTrackSampleLogger(SampleLogger):
@@ -480,18 +472,53 @@ class ClassCondSeparateTrackSampleLogger(SampleLogger):
         )
         self.stems = stems
         
-        torch_si_snr = ScaleInvariantSignalNoiseRatio()
-        torch_si_sdr = ScaleInvariantSignalDistortionRatio()
+        self.torch_si_snr = ScaleInvariantSignalNoiseRatio()
+        self.torch_si_sdr = ScaleInvariantSignalDistortionRatio()
+        
+        # Initialize metrics dictionaries for each number of steps and each stem
+        self.metrics_log = {
+            steps: {stem: {'si_snr': [], 'si_sdr': [], 'msdm_si_snr': []} for stem in stems} for steps in sampling_steps
+        }
 
-    @torch.no_grad()
-    def log_sample(self, trainer, pl_module, batch):
+    def on_validation_epoch_start(self, trainer, pl_module):
+        self.log_next = True
+
+    def on_validation_batch_start(
+        self, trainer, pl_module, batch, batch_idx, 
+        # dataloader_idx
+    ):
+        # if self.log_next:
+        #     self.log_sample(trainer, pl_module, batch)
+        #     self.log_next = False
+        
+        # if self.log_next == False and batch_idx % 5 == 0:
+        #     self.update_metrics(trainer, pl_module, batch)
+
+        if batch_idx % 5 == 0:
+            self.log_sample(trainer, pl_module, batch, batch_idx)
+
+    def log_sample(self, trainer, pl_module, batch, batch_idx):
+        
         is_train = pl_module.training
         if is_train:
             pl_module.eval()
 
         wandb_logger = get_wandb_logger(trainer).experiment
-        model = pl_module.model
+        original_samples, generated_samples, mixture_audios = self.generate_sample(trainer, pl_module, batch)
+        
+        if  batch_idx ==0 and trainer.is_global_zero:
+            self.log_audio(original_samples, generated_samples, mixture_audios, wandb_logger, trainer)
+        
+        # if trainer.is_global_zero: # TODO this need to be changed
+        self.update_metrics(original_samples, generated_samples, mixture_audios, wandb_logger, trainer)       
+        
+        if is_train:
+            pl_module.train()
 
+    def generate_sample(self, trainer, pl_module, batch):
+        
+        model = pl_module.model
+        
         # Extract mixture and original audio from the batch
         waveforms, class_indexes, channels_list, embedding = pl_module.get_input(batch)
 
@@ -539,19 +566,24 @@ class ClassCondSeparateTrackSampleLogger(SampleLogger):
             stem_data =rearrange(stem_data, "b c t -> b t c") .detach().cpu().numpy()
             original_samples[stem] = []
             for idx in range(waveforms.size(0)):
-                original_samples[stem].append(stem_data[idx])            
+                original_samples[stem].append(stem_data[idx])  
         
+        mixture_audios = batch[2].sum(1)[:, 0, :].detach().cpu().numpy()[..., np.newaxis] #channels_list[0][idx, 0, :].detach().cpu().numpy()[..., np.newaxis]
+        
+        return  original_samples, generated_samples, mixture_audios
+
+
+    @torch.no_grad()
+    def log_audio(self, original_samples, generated_samples, mixture_audio, wandb_logger, trainer):
         
         # Log the first item of the batch
         for idx in range(self.num_items):
             # Prepare the logging data
             logging_data = {}
-            
-            mixture_audio = channels_list[0][idx, 0, :].detach().cpu().numpy()[..., np.newaxis]
 
             # Prepare the original mixture log
             logging_data[f"Mixture_audio"] = wandb.Audio(
-                mixture_audio, 
+                mixture_audio[idx], 
                 caption=f"Mixture Audio {idx}", 
                 sample_rate=self.sampling_rate
             )
@@ -584,7 +616,91 @@ class ClassCondSeparateTrackSampleLogger(SampleLogger):
                 )
 
             # Log all accumulated data
-            wandb_logger.log(logging_data, step = trainer.global_step+idx)
+            wandb_logger.log(logging_data) #step = trainer.global_step+idx)
             
-        if is_train:
-            pl_module.train()
+    def sisnr(self, preds: torch.Tensor, target: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+        alpha = (torch.sum(preds * target, dim=-1, keepdim=True) + eps) / (torch.sum(target**2, dim=-1, keepdim=True) + eps)
+        target_scaled = alpha * target
+        noise = target_scaled - preds
+        s_target = torch.sum(target_scaled**2, dim=-1) + eps
+        s_error = torch.sum(noise**2, dim=-1) + eps
+        return 10 * torch.log10(s_target / s_error)
+
+
+    def sliding_window(self, tensor, window_size=1024, step_size=512):
+        num_windows = (tensor.size(-1) - window_size) // step_size + 1
+        windows = []
+        for i in range(num_windows):
+            start = i * step_size
+            end = start + window_size
+            windows.append(tensor[..., start:end])
+        return torch.stack(windows, dim=0)        
+            
+    @torch.no_grad()
+    def update_metrics(self, original_samples, generated_samples, mixture_audios, wandb_logger, trainer):
+
+        for steps in self.sampling_steps:
+            for stem in self.stems:
+                for idx in range(len(original_samples[stem])):  # Iterate over each sample in the batch
+                    original_audio = original_samples[stem][idx]
+                    generated_audio = generated_samples[stem][steps][idx]
+                    mixture_audio = mixture_audios[idx]
+
+                    original_audio = torch.tensor(original_audio).permute(1, 0)
+                    generated_audio = torch.tensor(generated_audio).permute(1, 0)
+                    mixture_audio = torch.tensor(mixture_audio).permute(1, 0)
+
+                    si_snr = self.torch_si_snr(generated_audio, original_audio)
+                    si_sdr = self.torch_si_sdr(generated_audio, original_audio)
+                    msdm_si_snr = self.sisnr(generated_audio, original_audio) - self.sisnr(mixture_audio, original_audio)
+
+                    # # Apply sliding window
+                    # original_windows = self.sliding_window(original_audio)
+                    # generated_windows = self.sliding_window(generated_audio)
+                    # mixture_windows = self.sliding_window(mixture_audio)
+
+                    # msdm_si_snr_values = []
+                    # for ow, gw, mw in zip(original_windows, generated_windows, mixture_windows):
+                    #     msdm_si_snr = self.sisnr(gw, ow).mean().item() - self.sisnr(mw, ow).mean().item()
+                    #     msdm_si_snr_values.append(msdm_si_snr)
+
+
+                    # mean_msdm_si_snr = 0.0 #self.torch_si_snr(generated_audio, original_audio) - self.torch_si_snr(mixture_audio, original_audio) # sum(msdm_si_snr_values) / len(msdm_si_snr_values)
+
+                    # Append computed metrics to the corresponding lists
+                    # self.metrics_log[steps][stem]['msdm_si_snr'].append(mean_msdm_si_snr)
+
+
+
+                    # Append computed metrics to the corresponding lists
+                    self.metrics_log[steps][stem]['si_snr'].append(si_snr.item())
+                    self.metrics_log[steps][stem]['si_sdr'].append(si_sdr.item())
+                    self.metrics_log[steps][stem]['msdm_si_snr'].append(msdm_si_snr.item())
+
+    
+    def on_validation_epoch_end(self, trainer, pl_module):
+        # wandb_logger = get_wandb_logger(trainer).experiment
+        log_dict = {}
+        
+        for steps in self.sampling_steps:
+            for stem in self.stems:
+                mean_si_snr = sum(self.metrics_log[steps][stem]['si_snr']) / len(self.metrics_log[steps][stem]['si_snr'])
+                mean_si_sdr = sum(self.metrics_log[steps][stem]['si_sdr']) / len(self.metrics_log[steps][stem]['si_sdr'])
+                mean_msdm_si_snr = sum(self.metrics_log[steps][stem]['msdm_si_snr']) / len(self.metrics_log[steps][stem]['msdm_si_snr'])
+
+                # wandb_logger.log({
+                #     f'{stem}_mean_si_snr_{steps}_steps': mean_si_snr,
+                #     f'{stem}_mean_si_sdr_{steps}_steps': mean_si_sdr
+                # })
+                log_dict[f'si_snr/{stem}_{steps}_steps'] = mean_si_snr
+                log_dict[f'si_sdr/{stem}_{steps}_steps'] = mean_si_sdr
+                log_dict[f'msdm_si_snr/{stem}_{steps}_steps'] = mean_msdm_si_snr
+
+
+                # Reset metrics for the current number of steps and stem
+                self.metrics_log[steps][stem]['si_snr'] = []
+                self.metrics_log[steps][stem]['si_sdr'] = []
+                self.metrics_log[steps][stem]['msdm_si_snr'] = []
+        
+        pl_module.log_dict(log_dict, sync_dist=True) # step=trainer.global_step)
+
