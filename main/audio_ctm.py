@@ -598,8 +598,8 @@ class UncondSampleLogger(Callback):
             
     @torch.no_grad()
     def sampling(self, model, sampler = 'exact', ctm=None, teacher=False, prefix="", step=-1, num_samples=-1, batch_size=-1, resize=False, generator=None, class_idx = None):
-        if not teacher:
-            model.eval()
+        # if not teacher:
+        #     model.eval()
         if step == -1:
             step = 1
         if batch_size == -1:
@@ -649,8 +649,8 @@ class UncondSampleLogger(Callback):
             all_images += [sample.cpu() for sample in gathered_samples]
             
             number += int(gathered_samples.shape[0])
-        if not teacher:
-            model.train()
+        # if not teacher:
+        #     model.train()
 
         arr = torch.stack(all_images, axis=0)
 
