@@ -113,5 +113,6 @@ trainer:
   limit_val_batches:
   limit_train_batches:
   strategy: ddp
+  num_sanity_val_steps: 0
 
-resume_from_checkpoint: lightning_logs/MSDM/2024-07-12T22-47-15__Testing_audiodm_uncond/checkpoints/last.ckpt
+resume_from_checkpoint:  lightning_logs/MSDM/2024-07-15T22-28-43__Testing_audiodm_uncond/checkpoints/last.ckpt

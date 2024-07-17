@@ -332,7 +332,7 @@ class Diffusion(pl.LightningModule):
 
             # Log teacher model denoises with heun and 18 steps (if we need to see)
             if self.cfg.diffusion.check_ctm_denoising_ability:
-                new_images_to_log, new_captions = self.generate_model_output(self.net, 'heun', [18], "Teacher")
+                new_images_to_log, new_captions = self.generate_model_output(self.teacher_model, 'heun', [18], "Teacher")
                 images_to_log.extend(new_images_to_log)
                 captions.extend(new_captions)
 

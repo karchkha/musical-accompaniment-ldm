@@ -22,6 +22,8 @@ def load_feature_extractor(args, eval=True):
         # feature_extractor = nn.ModuleDict(feature_extractor)
         # feature_extractor = feature_extractor.train(False).to(dist_util.dev())
         # feature_extractor.requires_grad_(False)
+    elif args.loss_norm == 'mse':
+        feature_extractor = F.mse_loss
     return feature_extractor
 
 # def load_discriminator_and_d_feature_extractor(args):

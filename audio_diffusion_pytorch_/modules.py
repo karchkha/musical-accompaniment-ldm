@@ -20,9 +20,9 @@ class ConditionedSequential(nn.Module):
         super().__init__()
         self.module_list = nn.ModuleList(*modules)
 
-    def forward(self, x: Tensor, mapping: Optional[Tensor] = None):
+    def forward(self, x: Tensor, mapping: Optional[Tensor] = None, mapping_s: Optional[Tensor] = None):
         for module in self.module_list:
-            x = module(x, mapping)
+            x = module(x, mapping, mapping_s)
         return x
 
 
@@ -160,11 +160,15 @@ class ResnetBlock1d(nn.Module):
         context_embedding_features: Optional[int] = None,
         context_heads: Optional[int] = None,
         context_head_features: Optional[int] = None,
+        training_mode = '',
+        linear_probing=False,
     ) -> None:
         super().__init__()
 
         self.use_mapping = exists(context_mapping_features)
         self.use_embedding = exists(context_embedding_features)
+        self.training_mode = training_mode
+        self.linear_probing = linear_probing
 
         self.block1 = ConvBlock1d(
             in_channels=in_channels,
@@ -182,6 +186,9 @@ class ResnetBlock1d(nn.Module):
             self.to_scale_shift = MappingToScaleShift(
                 features=context_mapping_features, channels=out_channels
             )
+            if training_mode == "ctm":
+                self.to_scale_shift_s = MappingToScaleShift(
+                    features=context_mapping_features, channels=out_channels)                
 
         if self.use_embedding:
             assert exists(context_heads) and exists(context_head_features)
@@ -213,6 +220,7 @@ class ResnetBlock1d(nn.Module):
         self,
         x: Tensor,
         mapping: Optional[Tensor] = None,
+        mapping_s: Optional[Tensor] = None,
         embedding: Optional[Tensor] = None,
     ) -> Tensor:
         assert_message = "context embedding required if context_embedding_features > 0"
@@ -229,6 +237,12 @@ class ResnetBlock1d(nn.Module):
         if self.use_mapping:
             scale_shift = self.to_scale_shift(mapping)
 
+        if self.training_mode == 'ctm':
+            scale_shift_s = self.to_scale_shift_s(mapping_s)
+            # if not self.linear_probing:
+            #     pass
+            scale_shift = tuple(t1 + t2 for t1, t2 in zip(scale_shift, scale_shift_s)) # Not 100% if this is how it should be
+
         h = self.block2(h, scale_shift=scale_shift)
 
         return h + self.to_out(x)
@@ -241,6 +255,8 @@ class PatchBlock(nn.Module):
         out_channels: int,
         patch_size: int = 2,
         context_mapping_features: Optional[int] = None,
+        training_mode = '',
+        linear_probing=False,
     ):
         super().__init__()
         assert_message = f"out_channels must be divisible by patch_size ({patch_size})"
@@ -252,10 +268,12 @@ class PatchBlock(nn.Module):
             out_channels=out_channels // patch_size,
             num_groups=min(patch_size, in_channels),
             context_mapping_features=context_mapping_features,
+            training_mode=training_mode,
+            linear_probing=linear_probing,
         )
 
-    def forward(self, x: Tensor, mapping: Optional[Tensor] = None) -> Tensor:
-        x = self.block(x, mapping)
+    def forward(self, x: Tensor, mapping: Optional[Tensor] = None, mapping_s: Optional[Tensor] = None) -> Tensor:
+        x = self.block(x, mapping, mapping_s)
         x = rearrange(x, "b c (l p) -> b (c p) l", p=self.patch_size)
         return x
 
@@ -267,6 +285,8 @@ class UnpatchBlock(nn.Module):
         out_channels: int,
         patch_size: int = 2,
         context_mapping_features: Optional[int] = None,
+        training_mode = '',
+        linear_probing=False,
     ):
         super().__init__()
         assert_message = f"in_channels must be divisible by patch_size ({patch_size})"
@@ -278,11 +298,13 @@ class UnpatchBlock(nn.Module):
             out_channels=out_channels,
             num_groups=min(patch_size, out_channels),
             context_mapping_features=context_mapping_features,
+            training_mode=training_mode,
+            linear_probing=linear_probing,
         )
 
-    def forward(self, x: Tensor, mapping: Optional[Tensor] = None) -> Tensor:
+    def forward(self, x: Tensor, mapping: Optional[Tensor] = None, mapping_s: Optional[Tensor] = None) -> Tensor:
         x = rearrange(x, " b (c p) l -> b c (l p) ", p=self.patch_size)
-        x = self.block(x, mapping)
+        x = self.block(x, mapping, mapping_s)
         return x
 
 
@@ -294,6 +316,8 @@ class Patcher(ConditionedSequential):
         blocks: int,
         factor: int,
         context_mapping_features: Optional[int] = None,
+        training_mode = '',
+        linear_probing=False,
     ):
         channels_pre = [in_channels * (factor ** i) for i in range(blocks)]
         channels_post = [in_channels * (factor ** (i + 1)) for i in range(blocks - 1)]
@@ -305,6 +329,8 @@ class Patcher(ConditionedSequential):
                 out_channels=channels_post[i],
                 patch_size=factor,
                 context_mapping_features=context_mapping_features,
+                training_mode=training_mode,
+                linear_probing=linear_probing,
             )
             for i in range(blocks)
         )
@@ -318,6 +344,8 @@ class Unpatcher(ConditionedSequential):
         blocks: int,
         factor: int,
         context_mapping_features: Optional[int] = None,
+        training_mode = '',
+        linear_probing=False,
     ):
         channels_pre = [in_channels]
         channels_pre += [
@@ -331,6 +359,8 @@ class Unpatcher(ConditionedSequential):
                 out_channels=channels_post[i],
                 patch_size=factor,
                 context_mapping_features=context_mapping_features,
+                training_mode=training_mode,
+                linear_probing=linear_probing,
             )
             for i in range(blocks)
         )
@@ -607,6 +637,8 @@ class DownsampleBlock1d(nn.Module):
         attention_multiplier: Optional[int] = None,
         context_mapping_features: Optional[int] = None,
         context_embedding_features: Optional[int] = None,
+        training_mode = '',
+        linear_probing=False,
     ):
         super().__init__()
         self.use_pre_downsample = use_pre_downsample
@@ -614,6 +646,9 @@ class DownsampleBlock1d(nn.Module):
         self.use_attention = use_attention
         self.use_extract = extract_channels > 0
         self.use_context = context_channels > 0
+        
+        self.training_mode = training_mode
+        self.linear_probing = linear_probing
 
         channels = out_channels if use_pre_downsample else in_channels
 
@@ -634,6 +669,8 @@ class DownsampleBlock1d(nn.Module):
                     context_embedding_features=context_embedding_features,
                     context_heads=attention_heads,
                     context_head_features=attention_features,
+                    training_mode=self.training_mode,
+                    linear_probing=self.linear_probing,
                 )
                 for i in range(num_layers)
             ]
@@ -664,6 +701,7 @@ class DownsampleBlock1d(nn.Module):
         self,
         x: Tensor,
         mapping: Optional[Tensor] = None,
+        mapping_s: Optional[Tensor] = None,
         channels: Optional[Tensor] = None,
         embedding: Optional[Tensor] = None,
     ) -> Union[Tuple[Tensor, List[Tensor]], Tensor]:
@@ -676,7 +714,7 @@ class DownsampleBlock1d(nn.Module):
 
         skips = []
         for block in self.blocks:
-            x = block(x, mapping=mapping, embedding=embedding)
+            x = block(x, mapping=mapping, mapping_s=mapping_s, embedding=embedding)
             skips += [x] if self.use_skip else []
 
         if self.use_attention:
@@ -714,6 +752,8 @@ class UpsampleBlock1d(nn.Module):
         attention_multiplier: Optional[int] = None,
         context_mapping_features: Optional[int] = None,
         context_embedding_features: Optional[int] = None,
+        training_mode = '',
+        linear_probing=False,
     ):
         super().__init__()
 
@@ -723,6 +763,9 @@ class UpsampleBlock1d(nn.Module):
         self.use_skip = use_skip
         self.skip_scale = 2 ** -0.5 if use_skip_scale else 1.0
 
+        self.training_mode = training_mode
+        self.linear_probing = linear_probing
+        
         channels = out_channels if use_pre_upsample else in_channels
 
         self.blocks = nn.ModuleList(
@@ -735,6 +778,8 @@ class UpsampleBlock1d(nn.Module):
                     context_embedding_features=context_embedding_features,
                     context_heads=attention_heads,
                     context_head_features=attention_features,
+                    training_mode=self.training_mode,
+                    linear_probing=self.linear_probing,
                 )
                 for _ in range(num_layers)
             ]
@@ -776,6 +821,7 @@ class UpsampleBlock1d(nn.Module):
         x: Tensor,
         skips: Optional[List[Tensor]] = None,
         mapping: Optional[Tensor] = None,
+        mapping_s: Optional[Tensor] = None,
         embedding: Optional[Tensor] = None,
     ) -> Union[Tuple[Tensor, Tensor], Tensor]:
 
@@ -784,7 +830,7 @@ class UpsampleBlock1d(nn.Module):
 
         for block in self.blocks:
             x = self.add_skip(x, skip=skips.pop()) if exists(skips) else x
-            x = block(x, mapping=mapping, embedding=embedding)
+            x = block(x, mapping=mapping, mapping_s=mapping_s, embedding=embedding)
 
         if self.use_attention:
             x = self.transformer(x)
@@ -810,6 +856,8 @@ class BottleneckBlock1d(nn.Module):
         attention_features: Optional[int] = None,
         context_mapping_features: Optional[int] = None,
         context_embedding_features: Optional[int] = None,
+        training_mode = '',
+        linear_probing=False,
     ):
         super().__init__()
 
@@ -818,6 +866,9 @@ class BottleneckBlock1d(nn.Module):
         )
 
         self.use_attention = use_attention
+        
+        self.training_mode = training_mode
+        self.linear_probing = linear_probing
 
         self.pre_block = ResnetBlock1d(
             in_channels=channels,
@@ -827,6 +878,8 @@ class BottleneckBlock1d(nn.Module):
             context_embedding_features=context_embedding_features,
             context_heads=attention_heads,
             context_head_features=attention_features,
+            training_mode=self.training_mode,
+            linear_probing=self.linear_probing,
         )
 
         if use_attention:
@@ -849,18 +902,21 @@ class BottleneckBlock1d(nn.Module):
             context_embedding_features=context_embedding_features,
             context_heads=attention_heads,
             context_head_features=attention_features,
+            training_mode=self.training_mode,
+            linear_probing=self.linear_probing,
         )
 
     def forward(
         self,
         x: Tensor,
         mapping: Optional[Tensor] = None,
+        mapping_s: Optional[Tensor] = None,
         embedding: Optional[Tensor] = None,
     ) -> Tensor:
-        x = self.pre_block(x, mapping=mapping, embedding=embedding)
+        x = self.pre_block(x, mapping=mapping, mapping_s=mapping_s, embedding=embedding)
         if self.use_attention:
             x = self.attention(x)
-        x = self.post_block(x, mapping=mapping, embedding=embedding)
+        x = self.post_block(x, mapping=mapping, mapping_s=mapping_s, embedding=embedding)
         return x
 
 
@@ -894,8 +950,14 @@ class UNet1d(nn.Module):
         context_features: Optional[int] = None,
         context_channels: Optional[Sequence[int]] = None,
         context_embedding_features: Optional[int] = None,
+        training_mode = '',
+        linear_probing=False,
     ):
         super().__init__()
+        
+        self.training_mode = training_mode
+        self.linear_probing = linear_probing
+        
         out_channels = default(out_channels, in_channels)
         context_channels = list(default(context_channels, []))
         num_layers = len(multipliers) - 1
@@ -933,6 +995,15 @@ class UNet1d(nn.Module):
                 nn.GELU(),
             )
 
+            if self.training_mode.lower() == 'ctm':
+                self.to_mapping_s = nn.Sequential(
+                    nn.Linear(context_mapping_features, context_mapping_features),
+                    nn.GELU(),
+                    nn.Linear(context_mapping_features, context_mapping_features),
+                    nn.GELU(),
+                )
+
+
         if use_context_time:
             assert exists(context_mapping_features)
             self.to_time = nn.Sequential(
@@ -957,6 +1028,8 @@ class UNet1d(nn.Module):
             blocks=patch_blocks,
             factor=patch_factor,
             context_mapping_features=context_mapping_features,
+            training_mode=self.training_mode,
+            linear_probing=self.linear_probing,
         )
 
         self.downsamples = nn.ModuleList(
@@ -977,6 +1050,8 @@ class UNet1d(nn.Module):
                     attention_heads=attention_heads,
                     attention_features=attention_features,
                     attention_multiplier=attention_multiplier,
+                    training_mode=self.training_mode,
+                    linear_probing=self.linear_probing,
                 )
                 for i in range(num_layers)
             ]
@@ -990,6 +1065,8 @@ class UNet1d(nn.Module):
             use_attention=use_attention_bottleneck,
             attention_heads=attention_heads,
             attention_features=attention_features,
+            training_mode=self.training_mode,
+            linear_probing=self.linear_probing,
         )
 
         self.upsamples = nn.ModuleList(
@@ -1011,6 +1088,8 @@ class UNet1d(nn.Module):
                     attention_heads=attention_heads,
                     attention_features=attention_features,
                     attention_multiplier=attention_multiplier,
+                    training_mode=self.training_mode,
+                    linear_probing=self.linear_probing,
                 )
                 for i in reversed(range(num_layers))
             ]
@@ -1022,6 +1101,8 @@ class UNet1d(nn.Module):
             blocks=patch_blocks,
             factor=patch_factor,
             context_mapping_features=context_mapping_features,
+            training_mode=self.training_mode,
+            linear_probing=self.linear_probing,
         )
 
     def get_channels(
@@ -1045,7 +1126,7 @@ class UNet1d(nn.Module):
         return channels
 
     def get_mapping(
-        self, time: Optional[Tensor] = None, features: Optional[Tensor] = None
+        self, time: Optional[Tensor] = None, features: Optional[Tensor] = None, which_noise = "t"
     ) -> Optional[Tensor]:
         """Combines context time features and features into mapping"""
         items, mapping = [], None
@@ -1062,13 +1143,17 @@ class UNet1d(nn.Module):
         # Compute joint mapping
         if self.use_context_time or self.use_context_features:
             mapping = reduce(torch.stack(items), "n b m -> b m", "sum")
-            mapping = self.to_mapping(mapping)
+            if which_noise == "t":
+                mapping = self.to_mapping(mapping)
+            if which_noise == "s":
+                mapping = self.to_mapping_s(mapping)
         return mapping
 
     def forward(
         self,
         x: Tensor,
         time: Optional[Tensor] = None,
+        s: Optional[Tensor] = None,
         *,
         features: Optional[Tensor] = None,
         channels_list: Optional[Sequence[Tensor]] = None,
@@ -1079,25 +1164,31 @@ class UNet1d(nn.Module):
         x = torch.cat([x, channels], dim=1) if exists(channels) else x
 
         mapping = self.get_mapping(time, features)
-
-        x = self.to_in(x, mapping)
+        
+        if s != None:
+            mapping_s = self.get_mapping(s, features, which_noise="s")
+            if self.linear_probing:
+                mapping_t = self.get_mapping(time, None, which_noise="s") # this logic is directly copied form ctm code. not sure this makes sense and we are not using this option 
+            
+        
+        x = self.to_in(x, mapping, mapping_s=None if s == None else mapping_s)
         skips_list = [x]
 
         for i, downsample in enumerate(self.downsamples):
             channels = self.get_channels(channels_list, layer=i + 1)
             x, skips = downsample(
-                x, mapping=mapping, channels=channels, embedding=embedding
+                x, mapping=mapping, mapping_s=None if s == None else mapping_s, channels=channels, embedding=embedding
             )
             skips_list += [skips]
 
-        x = self.bottleneck(x, mapping=mapping, embedding=embedding)
+        x = self.bottleneck(x, mapping=mapping, mapping_s=None if s == None else mapping_s, embedding=embedding)
 
         for i, upsample in enumerate(self.upsamples):
             skips = skips_list.pop()
-            x = upsample(x, skips, mapping=mapping, embedding=embedding)
+            x = upsample(x, skips, mapping=mapping, mapping_s=None if s == None else mapping_s, embedding=embedding)
 
         x += skips_list.pop()
-        x = self.to_out(x, mapping)
+        x = self.to_out(x, mapping, mapping_s=None if s == None else mapping_s)
 
         return x
 

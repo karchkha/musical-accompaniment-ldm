@@ -323,6 +323,19 @@ class KarrasDenoiser:
 
     def get_CTM_loss(self, estimate, target, weights, step):
         if self.args.loss_norm == 'lpips':
+            # print("Estimate Tensor:")
+            # print("Min:", estimate.min().item())
+            # print("Max:", estimate.max().item())
+            # print("Mean:", estimate.mean().item())
+            # print("Std:", estimate.std().item())
+
+            # # Print statistics for `target`
+            # print("Target Tensor:")
+            # print("Min:", target.min().item())
+            # print("Max:", target.max().item())
+            # print("Mean:", target.mean().item())
+            # print("Std:", target.std().item())
+
             if estimate.shape[-2] < 256:
                 estimate = F.interpolate(estimate, size=224, mode="bilinear")
                 target = F.interpolate(
@@ -331,9 +344,37 @@ class KarrasDenoiser:
             consistency_loss = (self.feature_extractor(
                 (estimate + 1) / 2.0,
                 (target + 1) / 2.0, ) * weights)
+        elif self.args.loss_norm == 'mse':
+            # print("Estimate Tensor:")
+            # print("Min:", estimate.min().item())
+            # print("Max:", estimate.max().item())
+            # print("Mean:", estimate.mean().item())
+            # print("Std:", estimate.std().item())
+
+            # # Print statistics for `target`
+            # print("Target Tensor:")
+            # print("Min:", target.min().item())
+            # print("Max:", target.max().item())
+            # print("Mean:", target.mean().item())
+            # print("Std:", target.std().item())
+            # print("\n\n\n")
+            consistency_loss = self.feature_extractor((estimate + 1) / 2.0, (target + 1) / 2.0, reduction="none").mean(dim=[1, 2]) #* weights
+            
+            # Apply weights to the loss
+            consistency_loss = consistency_loss * weights
+                  
         else:
             raise NotImplementedError
         return consistency_loss
+
+    def extract_last_layer(self, model):
+        """ Function to extract the last layer and its name from a model """
+        last_layer = None
+        last_name = None
+        for name, module in model.named_modules():
+            last_layer = module
+            last_name = name
+        return last_layer
 
     def get_DSM_loss(self, model, x_start, model_kwargs, consistency_loss,
                            step, init_step):
@@ -346,9 +387,17 @@ class KarrasDenoiser:
         denoising_weights = append_dims(get_weightings(self.args.diffusion_weight_schedule, snrs, self.args.sigma_data, None, None), dims)
         denoising_loss = mean_flat(denoising_weights * (denoised - x_start) ** 2)
         if self.args.apply_adaptive_weight:
-            balance_weight = self.calculate_adaptive_weight(consistency_loss.mean(), denoising_loss.mean(),
-                                                            last_layer=model.model.dec[
-                                                                '32x32_aux_conv'].weight)
+            last_layer = self.extract_last_layer(model)
+
+            balance_weight = self.calculate_adaptive_weight(
+                consistency_loss.mean(),
+                denoising_loss.mean(),
+                last_layer=last_layer.weight
+            )
+            
+            # balance_weight = self.calculate_adaptive_weight(consistency_loss.mean(), denoising_loss.mean(),
+            #                                                 last_layer=model.model.dec[
+            #                                                     '32x32_aux_conv'].weight)
         else:
             balance_weight = 1.
         # if self.args.large_log:

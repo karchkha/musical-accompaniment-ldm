@@ -1,10 +1,11 @@
 import yaml
 import argparse
 import importlib
-import audio_diffusion_pytorch_
+import audio_diffusion_pytorch
 
 from main.module_base import Model, DatamoduleWithValidation, MultiSourceSampleLogger
 from main.data import MultiSourceDataset
+from main.audio_ctm import Audio_CTM_Model
 import pytorch_lightning as pl
 import click
 import os
@@ -31,17 +32,6 @@ def dict2namespace(config):
             new_value = value
         setattr(namespace, key, new_value)
     return namespace
-
-# def instantiate_from_config(config):
-#     # Get the module and class from the configuration
-#     module_path, class_name = config._target_.rsplit('.', 1)
-#     module = importlib.import_module(module_path)
-#     cls = getattr(module, class_name)
-    
-#     # Remove _target_ from the config dictionary and instantiate the object
-#     config_dict = vars(config)
-#     config_dict.pop('_target_')
-#     return cls(**config_dict)
 
 def instantiate_from_config(config, **kwargs):
     if isinstance(config, argparse.Namespace):
@@ -107,7 +97,7 @@ def main(cfg):
     ckpt_callback = ModelCheckpoint(
         dirpath=checkpoint_path,
         save_top_k=1,
-        monitor="valid_loss",
+        monitor="val_loss",
         save_last=True,
         filename='{epoch}-{val_loss:.4f}',
         every_n_train_steps=None
@@ -115,13 +105,10 @@ def main(cfg):
 
     callbacks = [ckpt_callback]
 
-    # # Init Model
-    # diffusion_sigma_distribution = audio_diffusion_pytorch.LogNormalDistribution(**vars(cfg.diffusion_sigma_distribution))
-    # model = Model(**vars(cfg.model), diffusion_sigma_distribution = diffusion_sigma_distribution)
-
     # Init Model
-    diffusion_sigma_distribution = instantiate_from_config(cfg.diffusion_sigma_distribution)
-    model = instantiate_from_config(cfg.model, diffusion_sigma_distribution = diffusion_sigma_distribution)
+    # diffusion_sigma_distribution = instantiate_from_config(cfg.diffusion_sigma_distribution)
+    # model = instantiate_from_config(cfg.model, diffusion_sigma_distribution = diffusion_sigma_distribution)
+    model = Audio_CTM_Model(cfg)
 
     # init datasets
     train_dataset = instantiate_from_config(cfg.train_dataset)
@@ -134,10 +121,8 @@ def main(cfg):
                                         )
 
 
-    ### Init Sampler
-    diffusion_sampler = instantiate_from_config(cfg.diffusion_sampler)
-    diffusion_schedule = instantiate_from_config(cfg.diffusion_schedule)
-    audio_samples_logger = instantiate_from_config(cfg.audio_samples_logger, diffusion_sampler = diffusion_sampler, diffusion_schedule = diffusion_schedule)
+    # ### Init Sampler
+    audio_samples_logger = instantiate_from_config(cfg.audio_samples_logger)
 
     callbacks.append(audio_samples_logger)
 

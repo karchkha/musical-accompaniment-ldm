@@ -26,6 +26,7 @@ import torch
 from torch_utils import persistence
 from torch.nn.functional import silu
 from nn import append_dims
+from audio_diffusion_pytorch_.modules import UNet1d
 
 #----------------------------------------------------------------------------
 # Unified routine for initializing weights and biases.
@@ -901,3 +902,125 @@ class EDMPrecond_CTM(torch.nn.Module):
         pass
 
 #----------------------------------------------------------------------------
+
+#----------------------------------------------------------------------------
+# Improved preconditioning proposed in the paper "Elucidating the Design
+# Space of Diffusion-Based Generative Models" (EDM).
+# Copy of above funciton but for audio network
+
+class UnetWrapper(torch.nn.Module):
+    def __init__(self, class_cond, separation, model_type='UNet1d', training_mode='', linear_probing=False, **kwargs):
+        super().__init__()
+        self.class_cond = class_cond
+        self.separation = separation
+
+        # Initialize the underlying model
+        self.unet = globals()[model_type](**kwargs, training_mode = training_mode, linear_probing=linear_probing)
+
+    def forward(self, *args, **kwargs):
+        if self.class_cond:
+            # Add your class_cond specific operations here
+            pass
+        if self.separation:
+            # Add your separation specific operations here
+            pass
+        return self.unet(*args, **kwargs)
+
+class EDMPrecond_Audio_CTM(torch.nn.Module):
+    def __init__(self,
+        # img_resolution,                     # Image resolution.
+        # img_channels,                       # Number of color channels.
+        cfg,
+        label_dim       = 0,                # Number of class labels, 0 = unconditional.
+        use_fp16        = False,            # Execute the underlying model at FP16 precision?
+        sigma_min       = 0,                # Minimum supported noise level.
+        sigma_max       = float('inf'),     # Maximum supported noise level.
+        sigma_data      = 0.5,              # Expected standard deviation of the training data.
+        model_type      = 'UNet1d',       # Class name of the underlying model.
+        teacher = False,
+        teacher_model_path = '',
+        training_mode = '',
+        # arch='ncsn',
+        linear_probing=False,
+        **model_kwargs,                     # Keyword arguments for the underlying model.
+    ):
+        super().__init__()
+        self.teacher = teacher
+        # self.img_resolution = img_resolution
+        # self.img_channels = img_channels
+        self.label_dim = label_dim
+        self.use_fp16 = use_fp16
+        self.sigma_min = sigma_min
+        self.sigma_max = sigma_max
+        self.sigma_data = sigma_data
+        self.eye = torch.eye(self.label_dim)
+        if teacher:
+            self.model = UnetWrapper(**vars(cfg), model_type=model_type)
+        #     import pickle
+        #     print(f'Loading network from "{teacher_model_path}"...')
+        #     with open(teacher_model_path, 'rb') as f:
+        #         self.model = pickle.load(f)['ema']
+        else:
+            self.model = UnetWrapper(**vars(cfg), model_type=model_type, training_mode=training_mode, linear_probing=linear_probing)
+        #     # if arch in ['ddpmpp', 'ncsnpp']:
+        #     #     # resample_filter = [1,1] if arch == 'ddpmpp' else [1,3,3,1]
+        #     #     # channel_mult_noise = 1 if arch == 'ddpmpp' else 2
+        #     #     # encoder_type = 'standard' if arch == 'ddpmpp' else 'residual'
+        #     #     # embedding_type = 'positional' if arch == 'ddpmpp' else 'fourier'
+        #     #     self.model = globals()[model_type](img_resolution=img_resolution, in_channels=img_channels,
+        #     #                                        out_channels=img_channels, label_dim=label_dim,
+        #     #                                        training_mode=training_mode, resample_filter=resample_filter,
+        #     #                                        channel_mult_noise=channel_mult_noise, encoder_type=encoder_type,
+        #     #                                        embedding_type=embedding_type, linear_probing=linear_probing,
+        #     #                                        **model_kwargs)
+        #     # else:
+        #     #     self.model = globals()[model_type](img_resolution=img_resolution, in_channels=img_channels,
+        #     #                                        out_channels=img_channels, label_dim=label_dim,
+        #     #                                        training_mode=training_mode, linear_probing=linear_probing,
+        #     #                                        **model_kwargs)
+        # model = globals()[model_type](**vars(cfg))
+        # self.model = UnetWrapper(model)
+        # Initialize the UnetWrapper with the config and model_type
+
+    def get_c_in(self, sigma):
+        return 1 / (sigma**2 + self.sigma_data**2) ** 0.5
+
+    def unrescaling_t(self, rescaled_t):
+        return torch.exp(rescaled_t / 250.) - 1e-44
+
+    def forward(self, rescaled_x, rescaled_t, s=None, teacher=False, **model_kwargs):
+        # Ensure self.eye is on the same device as rescaled_x
+        self.eye = self.eye.to(rescaled_x.device)
+        
+        # class_labels = None 
+        # if self.label_dim == 0 else torch.zeros([1, self.label_dim], device=rescaled_x.device) \
+        #     if model_kwargs == {} else self.eye[model_kwargs['self.net.model.separation']].reshape(-1, self.label_dim)
+        dtype = torch.float16 if self.use_fp16 and rescaled_x.device.type == 'cuda' else torch.float32
+        if self.teacher:
+            #with torch.no_grad():
+            sigma = self.unrescaling_t(rescaled_t)
+            sigma = sigma.log() / 4
+            # c_in = append_dims(self.get_c_in(sigma), rescaled_x.ndim)
+            x = rescaled_x # / c_in
+            D_x = self.model(x.to(dtype), sigma.flatten(), **model_kwargs)
+            # c_skip = append_dims(self.sigma_data ** 2 / (sigma ** 2 + self.sigma_data ** 2), rescaled_x.ndim)
+            # c_out = append_dims(sigma * self.sigma_data / (sigma ** 2 + self.sigma_data ** 2).sqrt(), rescaled_x.ndim)
+            F_x = D_x # (D_x - c_skip * x) / c_out
+        else:
+            t = self.unrescaling_t(rescaled_t)
+            t = t.log() / 4
+            if s != None:
+                s = self.unrescaling_t(s)
+                s = s.log() / 4
+            F_x = self.model(rescaled_x.to(dtype), t.flatten(), None if s == None else s.flatten(), **model_kwargs)
+        #assert F_x.dtype == dtype
+        return F_x
+
+    def round_sigma(self, sigma):
+        return torch.as_tensor(sigma)
+
+    def convert_to_fp16(self):
+        pass
+
+    def convert_to_fp32(self):
+        pass
