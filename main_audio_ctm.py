@@ -1,7 +1,7 @@
 import yaml
 import argparse
 import importlib
-import audio_diffusion_pytorch
+import audio_diffusion_pytorch_
 
 from main.module_base import Model, DatamoduleWithValidation, MultiSourceSampleLogger
 from main.data import MultiSourceDataset
