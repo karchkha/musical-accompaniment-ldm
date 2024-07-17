@@ -358,7 +358,8 @@ class KarrasDenoiser:
             # print("Mean:", target.mean().item())
             # print("Std:", target.std().item())
             # print("\n\n\n")
-            consistency_loss = self.feature_extractor((estimate + 1) / 2.0, (target + 1) / 2.0, reduction="none").mean(dim=[1, 2]) #* weights
+            # consistency_loss = self.feature_extractor((estimate + 1) / 2.0, (target + 1) / 2.0, reduction="none").mean(dim=[1, 2]) #* weights
+            consistency_loss = self.feature_extractor(estimate, target, reduction="none").mean(dim=[1, 2])
             
             # Apply weights to the loss
             consistency_loss = consistency_loss * weights
