@@ -82,7 +82,7 @@ datamodule:
 
 
 audio_samples_logger:
-  _target_: main.module_base.ClassCondTrackSampleLogger
+  _target_: main.module_base.ClassCondSeparateTrackSampleLogger
   num_items: 1
   channels: 1
   sampling_rate: 22050

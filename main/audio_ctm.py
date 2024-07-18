@@ -246,7 +246,7 @@ class Audio_CTM_Model(pl.LightningModule):
             target_model=self.target_model,
             discriminator=None,
             init_step=0,              # TODO: might need to change to train start stpe (resume_step) if we adopt any schedulers for GAN ir something similar 
-            ctm=True,
+            ctm=True if self.diffusion.args.training_mode=="ctm" else False,
             num_heun_step=num_heun_step[0],
             gan_num_heun_step=-1,
             diffusion_training_=diffusion_training_[0],
@@ -409,6 +409,7 @@ class UncondSampleLogger(Callback):
         channels: int,
         sampling_rate: int,
         length: int,
+        sampler: str = "exact",
         check_ctm_denoising_ability: bool = True,
         clip_output: bool = True,
         clip_denoised: bool = False,
@@ -424,6 +425,7 @@ class UncondSampleLogger(Callback):
         self.clip_output = clip_output
         self.clip_denoised = clip_denoised
         self.denoise_steps_to_log = denoise_steps_to_log
+        self.sampler = sampler
         # self.diffusion_schedule = diffusion_schedule
         # self.diffusion_sampler = diffusion_sampler
 
@@ -497,19 +499,19 @@ class UncondSampleLogger(Callback):
             captions.extend(new_captions)
 
         # Log student model outputs
-        new_audios_to_log, new_captions = self.generate_model_output(pl_module, 'exact',  self.denoise_steps_to_log, "net")
+        new_audios_to_log, new_captions = self.generate_model_output(pl_module, self.sampler,  self.denoise_steps_to_log, "net")
         audios_to_log.extend(new_audios_to_log)
         captions.extend(new_captions)
 
         # Log target model outputs
-        new_audios_to_log, new_captions = self.generate_model_output(pl_module, 'exact',  self.denoise_steps_to_log, "target_model")
+        new_audios_to_log, new_captions = self.generate_model_output(pl_module, self.sampler,  self.denoise_steps_to_log, "target_model")
         audios_to_log.extend(new_audios_to_log)
         captions.extend(new_captions)
 
 
         # Log EMA models outputs
         for i, ema_rate in enumerate(pl_module.cfg.diffusion.ema_rate):
-            new_audios_to_log, new_captions = self.generate_model_output(pl_module, 'exact',  self.denoise_steps_to_log, f"ema_models[{i}]")
+            new_audios_to_log, new_captions = self.generate_model_output(pl_module, self.sampler,  self.denoise_steps_to_log, f"ema_models[{i}]")
             audios_to_log.extend(new_audios_to_log)
             captions.extend(new_captions)
 
@@ -663,7 +665,7 @@ class UncondSampleLogger(Callback):
 
         # generate random grid class conditional or unconditional
         for step in steps:
-            xh = self.sampling(model=model, sampler=sampler, teacher= True if prefix == "teacher_model" else False, prefix=prefix, step=step, num_samples=1, batch_size=model.cfg.datamodule.batch_size, ctm=True, class_idx = None)
+            xh = self.sampling(model=model, sampler=sampler, teacher= True if prefix == "teacher_model" else False, prefix=prefix, step=step, num_samples=1, batch_size=model.cfg.datamodule.batch_size, ctm=True if model.cfg.diffusion.training_mode=="ctm" else False, class_idx = None)
             xh.clamp(-1.0, 1.0) # (xh * 0.5 + 0.5).clamp(0, 1)
 
             caption = f"{prefix} {step} Steps"
