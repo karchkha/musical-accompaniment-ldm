@@ -1012,6 +1012,13 @@ class UNet1d(nn.Module):
                 ),
                 nn.GELU(),
             )
+            if self.training_mode.lower() == 'ctm':
+                self.to_time_s = nn.Sequential(
+                    TimePositionalEmbedding(
+                        dim=channels, out_features=context_mapping_features
+                    ),
+                    nn.GELU(),
+                )
 
         if use_context_features:
             assert exists(context_features) and exists(context_mapping_features)
@@ -1134,7 +1141,10 @@ class UNet1d(nn.Module):
         if self.use_context_time:
             assert_message = "use_context_time=True but no time features provided"
             assert exists(time), assert_message
-            items += [self.to_time(time)]
+            if which_noise == "t":
+                items += [self.to_time(time)]
+            if which_noise == "s":
+                items += [self.to_time_s(time)]            
         # Compute features
         if self.use_context_features:
             assert_message = "context_features exists but no features provided"
