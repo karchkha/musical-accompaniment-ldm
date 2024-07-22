@@ -1,3 +1,5 @@
+import wandb
+import argparse
 import yaml
 import argparse
 import importlib
@@ -43,6 +45,55 @@ def dict2namespace(config):
 #     config_dict.pop('_target_')
 #     return cls(**config_dict)
 
+def parse_cli_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--cfg', default='configs/train_audiodm_conditional.yaml', help='Configuration File')
+    args, unknown = parser.parse_known_args()
+
+    cli_args = {}
+    i = 0
+    while i < len(unknown):
+        if unknown[i].startswith("--"):
+            if '=' in unknown[i]:
+                key, value = unknown[i].split('=', 1)
+                key = key.lstrip("--")
+            else:
+                key = unknown[i].lstrip("--")
+                if i + 1 < len(unknown) and not unknown[i + 1].startswith("--"):
+                    value = unknown[i + 1]
+                    i += 1
+                else:
+                    value = True
+            cli_args[key] = value
+        i += 1
+
+    return args.cfg, cli_args
+
+def update_config_with_args(config, cli_args):
+    for key, value in cli_args.items():
+        keys = key.split('.')
+        d = config
+        for k in keys[:-1]:
+            d = d.setdefault(k, {})
+        # Convert value to appropriate type
+        if isinstance(d[keys[-1]], bool):
+            value = bool(value)
+        elif isinstance(d[keys[-1]], int):
+            value = int(value)
+        elif isinstance(d[keys[-1]], float):
+            value = float(value)
+        d[keys[-1]] = value
+
+def flatten_dict(d, parent_key='', sep='.'):
+    items = []
+    for k, v in d.items():
+        new_key = f"{parent_key}{sep}{k}" if parent_key else k
+        if isinstance(v, dict):
+            items.extend(flatten_dict(v, new_key, sep=sep).items())
+        else:
+            items.append((new_key, v))
+    return dict(items)
+
 def instantiate_from_config(config, **kwargs):
     if isinstance(config, argparse.Namespace):
         config = vars(config)
@@ -55,13 +106,20 @@ def instantiate_from_config(config, **kwargs):
     config_dict = {k: v for k, v in config.items() if k != '_target_'}
     return cls(**config_dict, **kwargs)
 
-@click.command()
-@click.option('--cfg', default='configs/train_audiodm_conditional.yaml', help='Configuration File')
-def main(cfg):
-    config = yaml.load(open(cfg, 'r'), Loader=yaml.FullLoader)
-    with open(cfg, "r") as f:
-        cfg = yaml.safe_load(f)
-        cfg = dict2namespace(cfg)
+# @click.command()
+# @click.option('--cfg', default='configs/train_audiodm_conditional.yaml', help='Configuration File')
+def main():
+    
+    cfg_path, cli_args = parse_cli_args()
+           
+    config = yaml.load(open(cfg_path, 'r'), Loader=yaml.FullLoader)
+    # with open(cfg, "r") as f:
+    #     cfg = yaml.safe_load(f)
+
+    # Update the configuration with command-line arguments if provided
+    update_config_with_args(config, cli_args)
+       
+    cfg = dict2namespace(config)
 
     log_path = cfg.log_directory
     create_directories(log_path)
@@ -86,11 +144,14 @@ def main(cfg):
 
     create_directories(run_path)
 
+    # Flatten configuration for logging
+    flattened_config = flatten_dict(config)
+    
     wandb_logger = WandbLogger(
         save_dir=run_path,
         # version=nowname,
         project= cfg.project_name,
-        config=config,
+        config=flattened_config,
         name=nowname,
         entity='tornike_karchkha',
     )

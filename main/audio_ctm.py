@@ -22,6 +22,11 @@ from pytorch_lightning import Callback, Trainer
 import torch.nn.functional as F
 from typing import *
 from einops import rearrange
+import torchaudio
+from pytorch_lightning.utilities.rank_zero import rank_zero_only
+from audioldm_eval import EvaluationHelper
+import shutil
+from pathlib import Path
 
 
 class CosineWarmupScheduler(optim.lr_scheduler._LRScheduler):
@@ -416,6 +421,9 @@ class UncondSampleLogger(Callback):
         denoise_steps_to_log: List[int] = [1],
         # diffusion_schedule = None,  # Assuming type Schedule
         # diffusion_sampler = None,  # Assuming type Sampler
+        model_to_calculate_metrics: str = "",
+        sampler_to_calculate_metrics: str = "",
+        steps_to_calculate_metrics: int = 0,
     ) -> None:
         self.num_items = num_items
         self.channels = channels
@@ -428,6 +436,9 @@ class UncondSampleLogger(Callback):
         self.sampler = sampler
         # self.diffusion_schedule = diffusion_schedule
         # self.diffusion_sampler = diffusion_sampler
+        self.model_to_calculate_metrics = model_to_calculate_metrics
+        self.sampler_to_calculate_metrics = sampler_to_calculate_metrics
+        self.steps_to_calculate_metrics = steps_to_calculate_metrics
 
         self.log_next = False
 
@@ -448,25 +459,54 @@ class UncondSampleLogger(Callback):
         if batch_idx == 0:
             self.log_sample(trainer, pl_module, batch, batch_idx)
             
-        # self.save_sample(trainer, pl_module, batch, batch_idx)
+        # this will dave audios for FAD and oter metrcis calculation
+        if self.model_to_calculate_metrics is not None:
+            self.generate_and_save_model_samples(trainer, pl_module, self.sampler_to_calculate_metrics, self.steps_to_calculate_metrics, batch, batch_idx, prefix=self.model_to_calculate_metrics)
+                   
+            
+    def generate_and_save_model_samples(self, trainer, pl_module, sampler, denoise_steps_to_log, batch, batch_idx, prefix=""):   
+        
+        current_epoch = trainer.current_epoch
+        
+        new_sampling_rate = 16000 # because FAD is calculated of 16000
+        
+        # Create base directory path
+        base_dir = os.path.dirname(pl_module._trainer.checkpoint_callback.dirpath)
+        resampler = torchaudio.transforms.Resample(self.sampling_rate, new_sampling_rate)
+        
+        # doing this for sweep to work
+        if type(denoise_steps_to_log) == int:
+            sampling_steps = [denoise_steps_to_log]
+        else:
+            sampling_steps = denoise_steps_to_log
+                     
+        # Generate model outputs
+        new_audios_to_log, new_captions = self.generate_model_output(pl_module, sampler, sampling_steps, prefix)
 
-    # def log_sample(self, trainer, pl_module, batch, batch_idx):
-        
-    #     is_train = pl_module.training
-    #     if is_train:
-    #         pl_module.eval()
+        for step_idx, step in enumerate(sampling_steps):
+            step_dir = os.path.join(base_dir, f'audios_{current_epoch}_step{step}')
+            generated_dir = os.path.join(step_dir, 'generated')
+            original_dir = os.path.join(step_dir, 'original')
 
-    #     wandb_logger = get_wandb_logger(trainer).experiment
-    #     original_samples, generated_samples, mixture_audios = self.generate_sample(trainer, pl_module, batch)
-        
-    #     if  batch_idx ==0 and trainer.is_global_zero:
-    #         self.log_audio(original_samples, generated_samples, mixture_audios, wandb_logger, trainer)
-        
-    #     # if trainer.is_global_zero: # TODO this need to be changed
-    #     self.update_metrics(original_samples, generated_samples, mixture_audios, wandb_logger, trainer)       
-        
-    #     if is_train:
-    #         pl_module.train()
+            # Create directories if they don't exist
+            os.makedirs(generated_dir, exist_ok=True)
+            os.makedirs(original_dir, exist_ok=True)
+            
+            for idx in range(batch[0].size(0)):
+                audio = new_audios_to_log[step_idx][idx]  # Ensure tensor is on CPU
+                original_audio = batch[0][idx].cpu()  # Ensure tensor is on CPU
+
+                # Resample audio
+                resampled_audio = resampler(torch.tensor(audio).permute(1,0))
+                resampled_original_audio = resampler(original_audio.detach())
+
+                # Define file names
+                generated_file_name = os.path.join(generated_dir, f'audio_epoch_{current_epoch}_batch_{batch_idx}_sample_{idx}.wav')
+                original_file_name = os.path.join(original_dir, f'audio_epoch_{current_epoch}_batch_{batch_idx}_sample_{idx}.wav')
+
+                # Save audio files
+                torchaudio.save(generated_file_name, resampled_audio, 16000)
+                torchaudio.save(original_file_name, resampled_original_audio, 16000)
 
     def get_nested_attr(self, obj, attr):
         """ Get a nested attribute, supporting indexed access """
@@ -492,6 +532,12 @@ class UncondSampleLogger(Callback):
         audios_to_log = []
         captions = []
 
+        # doing this for sweep to work
+        if type(self.denoise_steps_to_log) == int:
+            sampling_steps = [self.denoise_steps_to_log]
+        else:
+            sampling_steps = self.denoise_steps_to_log
+
         # Log teacher model denoises with heun and 18 steps (if we need to see)
         if self.check_ctm_denoising_ability:
             new_audios_to_log, new_captions = self.generate_model_output(pl_module, 'heun', [18], "teacher_model")
@@ -499,19 +545,19 @@ class UncondSampleLogger(Callback):
             captions.extend(new_captions)
 
         # Log student model outputs
-        new_audios_to_log, new_captions = self.generate_model_output(pl_module, self.sampler,  self.denoise_steps_to_log, "net")
+        new_audios_to_log, new_captions = self.generate_model_output(pl_module, self.sampler,  sampling_steps, "net")
         audios_to_log.extend(new_audios_to_log)
         captions.extend(new_captions)
 
         # Log target model outputs
-        new_audios_to_log, new_captions = self.generate_model_output(pl_module, self.sampler,  self.denoise_steps_to_log, "target_model")
+        new_audios_to_log, new_captions = self.generate_model_output(pl_module, self.sampler,  sampling_steps, "target_model")
         audios_to_log.extend(new_audios_to_log)
         captions.extend(new_captions)
 
 
         # Log EMA models outputs
         for i, ema_rate in enumerate(pl_module.cfg.diffusion.ema_rate):
-            new_audios_to_log, new_captions = self.generate_model_output(pl_module, self.sampler,  self.denoise_steps_to_log, f"ema_models[{i}]")
+            new_audios_to_log, new_captions = self.generate_model_output(pl_module, self.sampler,  sampling_steps, f"ema_models[{i}]")
             audios_to_log.extend(new_audios_to_log)
             captions.extend(new_captions)
 
@@ -534,70 +580,7 @@ class UncondSampleLogger(Callback):
                     logging_data[caption] = wandb.Audio(audio, sample_rate=self.sampling_rate, caption=f"batch_{batch_idx}_N_{idx}") # TODO: Make validation epoch number here instaed of batch index
                 wandb_logger.log(logging_data)
         
-        #### TODO: Here will be saving files in seperate folders and then later calculate FAD and other metrics on them!!! 
-        
-        # @torch.no_grad()
-        # def save_sample(self, trainer, pl_module, batch, batch_idx):
-            
-
-        #     ####################### Logging FID and Iscore ##################################
-
-        #     x_batch = ((images + 1) * 127.5).clamp(0, 255).to(torch.uint8)
-
-        #     # Update metric for student model
-        #     self.update_metrics(self.net, self.cfg.diffusion.denoise_steps_to_log, 'student', x_batch)
-
-        #     # Update metric for target model
-        #     self.update_metrics(self.target_model, self.cfg.diffusion.denoise_steps_to_log, 'target', x_batch)
-
-        #     # Update metric for ema models
-        #     for ema_model, ema_rate in zip(self.ema_models, self.cfg.diffusion.ema_rate):
-        #         self.update_metrics(ema_model, self.cfg.diffusion.denoise_steps_to_log, f'ema_{ema_rate}', x_batch)
-
-
-    def update_metrics(self, model, steps, prefix, x_batch):
-        for step in steps:
-            xh = self.sampling(model=model, step=step, num_samples=self.cfg.testing.batch_size, batch_size=self.cfg.testing.batch_size, ctm=True)
-            xh = ((xh + 1) * 127.5).clamp(0, 255).to(torch.uint8).to(self.device)
-
-            if self.cfg.testing.calc_inception:
-                self.evaluation_attrs[f'inception_{prefix}_{step}'].update(xh)
-
-            if self.cfg.testing.calc_fid:
-                self.evaluation_attrs[f'fid_{prefix}_{step}'].update(x_batch, real=True)
-                self.evaluation_attrs[f'fid_{prefix}_{step}'].update(xh, real=False)
-
-
-
-        # # Get start diffusion noise
-        # noise = torch.randn(
-        #     (self.num_items, self.channels, self.length), device=pl_module.device
-        # )
-
-        # for steps in self.sampling_steps:
-
-        #     samples = model.sample(
-        #         noise=noise,
-        #         sampler=self.diffusion_sampler,
-        #         sigma_schedule=self.diffusion_schedule,
-        #         num_steps=steps,
-        #     )
-        #     samples = rearrange(samples, "b c t -> b t c").detach().cpu().numpy()
-
-        #     wandb_logger.log(
-        #         {
-        #             f"sample_{idx}_{steps}": wandb.Audio(
-        #                 samples[idx],
-        #                 caption=f"Sampled in {steps} steps",
-        #                 sample_rate=self.sampling_rate,
-        #             )
-        #             for idx in range(self.num_items)
-        #         }
-        #     )
-
-        # if is_train:
-        #     pl_module.train()
-            
+         
     @torch.no_grad()
     def sampling(self, model, sampler = 'exact', ctm=None, teacher=False, prefix="", step=-1, num_samples=-1, batch_size=-1, resize=False, generator=None, class_idx = None):
         # if not teacher:
@@ -628,24 +611,55 @@ class UncondSampleLogger(Callback):
             else:
                 x_T = None
 
-            sample = karras_sample(
-                diffusion=model.diffusion,
-                model=model_to_use,
-                shape=(batch_size, self.channels, self.length),
-                steps=step,
-                model_kwargs=model_kwargs, # in case of classes class goes here???
-                device=model.device,
-                clip_denoised=True if teacher else self.clip_denoised,
-                sampler=sampler,
-                generator=None,
-                teacher=teacher,
-                ctm= ctm,
-                x_T=x_T if generator != None else self.x_T.to(self.device) if num_samples == -1 else None,
-                clip_output=self.clip_output,
-                sigma_min=model.cfg.diffusion.sigma_min,
-                sigma_max=model.cfg.diffusion.sigma_max,
-                train=False,
-            )
+            if sampler == "ADPM2Sampler":
+                import audio_diffusion_pytorch_
+                from main.module_base import Audio_DM_Model
+                diffusion_sampler = audio_diffusion_pytorch_.ADPM2Sampler(rho = 1)
+                sigma_schedule = audio_diffusion_pytorch_.KarrasSchedule(sigma_min = model.cfg.diffusion.sigma_min, sigma_max =  model.cfg.diffusion.sigma_max,  rho = model.cfg.diffusion.rho)
+
+                # model_to_use = Audio_DM_Model(learning_rate = 1.e-4, beta1 = 0.9, beta2 = 0.99, **vars(model.cfg.model)).to(model.device)
+                # model_to_use.eval()
+                diffusion_sigma_distribution = audio_diffusion_pytorch_.LogNormalDistribution(mean = -3.0, std = 1.0)
+                
+                diffusion = audio_diffusion_pytorch_.Diffusion(
+                    net=model_to_use.model.unet,
+                    sigma_distribution=diffusion_sigma_distribution,
+                    sigma_data=model.cfg.diffusion.sigma_data,
+                    dynamic_threshold=0.0,
+                )
+
+
+                # Get start diffusion noise
+                noise = torch.randn(
+                    (batch_size, self.channels, self.length), device=model.device
+                )
+               
+                diffusion_sampler = audio_diffusion_pytorch_.DiffusionSampler(
+                        diffusion=diffusion,
+                        sampler=diffusion_sampler,
+                        sigma_schedule=sigma_schedule,
+                        num_steps=step,
+                    )
+                sample = diffusion_sampler(noise, **model_kwargs)
+            else:        
+                sample = karras_sample(
+                    diffusion=model.diffusion,
+                    model=model_to_use,
+                    shape=(batch_size, self.channels, self.length),
+                    steps=step,
+                    model_kwargs=model_kwargs, # in case of classes class goes here???
+                    device=model.device,
+                    clip_denoised=True if teacher else self.clip_denoised,
+                    sampler=sampler,
+                    generator=None,
+                    teacher=teacher,
+                    ctm= ctm,
+                    x_T=x_T if generator != None else self.x_T.to(self.device) if num_samples == -1 else None,
+                    clip_output=self.clip_output,
+                    sigma_min=model.cfg.diffusion.sigma_min,
+                    sigma_max=model.cfg.diffusion.sigma_max,
+                    train=False,
+                )
 
             gathered_samples = sample.contiguous()
             all_images += [sample.cpu() for sample in gathered_samples]
@@ -674,3 +688,29 @@ class UncondSampleLogger(Callback):
             captions.append(caption)
 
         return audios_to_log, captions
+    
+    @rank_zero_only
+    def on_validation_epoch_end(self, trainer, pl_module):
+        current_epoch = trainer.current_epoch
+        base_dir = os.path.dirname(trainer.checkpoint_callback.dirpath)
+        wandb_logger = get_wandb_logger(trainer).experiment
+        evaluator = EvaluationHelper(sampling_rate=16000, device=pl_module.device)
+
+        steps_to_calculate_metrics = self.steps_to_calculate_metrics if isinstance(self.steps_to_calculate_metrics, list) else [self.steps_to_calculate_metrics]
+
+        for step in steps_to_calculate_metrics:
+            step_dir = os.path.join(base_dir, f'audios_{current_epoch}_step{step}')
+            if os.path.exists(step_dir):
+                dir1, dir2 = Path(os.path.join(step_dir, "generated")), Path(os.path.join(step_dir, "original"))
+                print("\nNow evaluating:", step_dir)
+                metrics = evaluator.main(str(dir1), str(dir2))
+                metrics_buffer = {f"step_{step}/{k}" if isinstance(self.steps_to_calculate_metrics, list) else k: float(v) for k, v in metrics.items()}
+
+                if metrics_buffer:
+                    wandb_logger.log(metrics_buffer, commit=True)
+                    # for k, v in metrics_buffer.items():
+                    #     wandb_logger.log({k: v}, commit=False)
+                    #     print(k, v)
+                    # wandb_logger.log({}, commit=True)
+                shutil.rmtree(dir1)
+                shutil.rmtree(dir2)

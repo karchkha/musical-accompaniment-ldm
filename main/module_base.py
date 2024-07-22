@@ -11,6 +11,12 @@ from pytorch_lightning.loggers import WandbLogger #LoggerCollection, WandbLogger
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
 from torchmetrics.audio import ScaleInvariantSignalNoiseRatio, ScaleInvariantSignalDistortionRatio
+import os
+import torchaudio
+from pytorch_lightning.utilities.rank_zero import rank_zero_only
+import shutil
+from audioldm_eval import EvaluationHelper
+from pathlib import Path
 
 """ Model """
 
@@ -213,7 +219,7 @@ class SampleLogger(Callback):
         channels: int,
         sampling_rate: int,
         length: int,
-        sampling_steps: List[int],
+        sampling_steps: Union[List[int], int],
         diffusion_schedule: Schedule,
         diffusion_sampler: Sampler,
     ) -> None:
@@ -226,6 +232,51 @@ class SampleLogger(Callback):
         self.diffusion_sampler = diffusion_sampler
 
         self.log_next = False
+        
+        
+    #     # Check if diffusion_sampler is an instance of KarrasDenoiser
+    #     if isinstance(self.diffusion_sampler, KarrasDenoiser):
+    #         print("diffusion_sampler is an instance of KarrasDenoiser")
+    #         schedule_sampler = create_named_schedule_sampler(self.diffusion_sampler.args, self.diffusion_sampler.args.schedule_sampler, self.diffusion_sampler.args.start_scales)
+    #         diffusion_schedule_sampler = create_named_schedule_sampler(self.diffusion_sampler.args, self.diffusion_sampler.args.diffusion_schedule_sampler, self.diffusion_sampler.args.start_scales)
+            
+    #         self.diffusion_sampler.schedule_sampler = schedule_sampler
+    #         self.diffusion_sampler.diffusion_schedule_sampler = diffusion_schedule_sampler
+    #         self.scenario = "KarrasDenoiser"
+    #     else:
+    #         print("diffusion_sampler is NOT an instance of KarrasDenoiser")
+    #         self.scenario = "ADPM2Sampler"
+
+    # def sample_wrapper(self, model, noise, step, model_kwargs={}, sampler="heun"):
+    #     if self.scenario == 'KarrasDenoiser':
+    #         sample = karras_sample(
+    #             diffusion=self.diffusion_sampler,
+    #             model=model,
+    #             shape=(noise.shape[0], self.channels, self.length),
+    #             steps=step,
+    #             model_kwargs=model_kwargs,  # in case of classes class goes here
+    #             device=noise.device,
+    #             clip_denoised=True,
+    #             sampler=sampler,
+    #             generator=None,
+    #             teacher=False,
+    #             ctm=True,
+    #             x_T=noise,
+    #             clip_output=True,
+    #             sigma_min=self.diffusion_sampler.args.sigma_min,
+    #             sigma_max=self.diffusion_sampler.args.sigma_max,
+    #             train=False,
+    #         )
+    #     elif self.scenario == 'ADPM2Sampler':
+    #         sample = model.sample(
+    #             noise=noise,
+    #             sampler=self.diffusion_sampler,
+    #             sigma_schedule=self.diffusion_schedule,
+    #             num_steps=step,
+    #         )
+    #     else:
+    #         raise ValueError(f"Unknown scenario: {self.scenario}")
+    #     return sample
 
     def on_validation_epoch_start(self, trainer, pl_module):
         self.log_next = True
@@ -237,6 +288,147 @@ class SampleLogger(Callback):
         if self.log_next:
             self.log_sample(trainer, pl_module, batch)
             self.log_next = False
+            
+        self.save_sample(trainer, pl_module, batch, batch_idx)
+
+    def save_sample(self, trainer, pl_module, batch, batch_idx):
+        current_epoch = trainer.current_epoch
+        
+        new_sampling_rate = 16000 # because FAD is calculated of 16000
+        
+        # Create base directory path
+        base_dir = os.path.dirname(pl_module._trainer.checkpoint_callback.dirpath)
+        resampler = torchaudio.transforms.Resample(self.sampling_rate, new_sampling_rate)
+        
+        # doing this for sweep to work
+        if type(self.sampling_steps) == int:
+            sampling_steps = [self.sampling_steps]
+        else:
+            sampling_steps = self.sampling_steps
+
+
+        # Generate model outputs
+        new_audios_to_log, new_captions = self.generate_model_output(pl_module, self.diffusion_sampler, sampling_steps, "net", batch)
+        
+        for step_idx, step in enumerate(sampling_steps):
+            step_dir = os.path.join(base_dir, f'audios_{current_epoch}_step{step}')
+            generated_dir = os.path.join(step_dir, 'generated')
+            original_dir = os.path.join(step_dir, 'original')
+
+            # Create directories if they don't exist
+            os.makedirs(generated_dir, exist_ok=True)
+            os.makedirs(original_dir, exist_ok=True)
+            
+            for idx in range(batch[0].size(0)):
+                audio = new_audios_to_log[step_idx][idx]  # Ensure tensor is on CPU
+                original_audio = batch[0][idx].cpu()  # Ensure tensor is on CPU
+
+                # Resample audio
+                resampled_audio = resampler(torch.tensor(audio).permute(1,0))
+                resampled_original_audio = resampler(original_audio.detach())
+
+                # Define file names
+                generated_file_name = os.path.join(generated_dir, f'audio_epoch_{current_epoch}_batch_{batch_idx}_sample_{idx}.wav')
+                original_file_name = os.path.join(original_dir, f'audio_epoch_{current_epoch}_batch_{batch_idx}_sample_{idx}.wav')
+
+                # Save audio files
+                torchaudio.save(generated_file_name, resampled_audio, 16000)
+                torchaudio.save(original_file_name, resampled_original_audio, 16000)
+
+    @rank_zero_only
+    def on_validation_epoch_end(self, trainer, pl_module):
+        current_epoch = trainer.current_epoch
+        base_dir = os.path.dirname(trainer.checkpoint_callback.dirpath)
+        wandb_logger = get_wandb_logger(trainer).experiment
+        evaluator = EvaluationHelper(sampling_rate=16000, device=pl_module.device)
+
+        sampling_steps = self.sampling_steps if isinstance(self.sampling_steps, list) else [self.sampling_steps]
+
+        for step in sampling_steps:
+            step_dir = os.path.join(base_dir, f'audios_{current_epoch}_step{step}')
+            if os.path.exists(step_dir):
+                dir1, dir2 = Path(os.path.join(step_dir, "generated")), Path(os.path.join(step_dir, "original"))
+                print("\nNow evaluating:", step_dir)
+                metrics = evaluator.main(str(dir1), str(dir2))
+                metrics_buffer = {f"step_{step}/{k}" if isinstance(self.sampling_steps, list) else k: float(v) for k, v in metrics.items()}
+
+                if metrics_buffer:
+                    for k, v in metrics_buffer.items():
+                        wandb_logger.log({k: v}, commit=False)
+                        print(k, v)
+                    wandb_logger.log({}, commit=True)
+                shutil.rmtree(dir1)
+                shutil.rmtree(dir2)      
+    
+    def generate_model_output(self, model, sampler, steps, prefix, batch):
+
+        audios_to_log = []
+        captions = []
+        
+        batch_size = batch[0].size(0)
+
+        # generate random grid class conditional or unconditional
+        for step in steps:
+            xh = self.sampling(model=model, sampler=sampler, teacher= True if prefix == "teacher_model" else False, prefix=prefix, step=step, num_samples=1, batch_size=batch_size, ctm= False, class_idx = None)
+            xh.clamp(-1.0, 1.0) # (xh * 0.5 + 0.5).clamp(0, 1)
+
+            caption = f"{prefix}_{step}_Steps"
+
+            audios_to_log.append(xh.permute(0, 2, 1).cpu().numpy())
+            captions.append(caption)
+
+        return audios_to_log, captions
+
+    @torch.no_grad()
+    def sampling(self, model, sampler = 'exact', ctm=None, teacher=False, prefix="", step=-1, num_samples=-1, batch_size=-1, resize=False, generator=None, class_idx = None):
+        # if not teacher:
+        #     model.eval()
+        if step == -1:
+            step = 1
+        if batch_size == -1:
+            batch_size = model.cfg.datamodule.batch_size
+
+        all_images = []
+        number = 0
+        
+        # Dynamically select model based on prefix using getattr
+        model_to_use = model.model
+
+        while num_samples > number:
+            model_kwargs = {}
+            is_train = model.training
+            if is_train:
+                model.eval()
+
+            # Get start diffusion noise
+            noise = torch.randn(
+                (batch_size, self.channels, self.length), device=model.device
+            )
+
+            # samples = self.sample_wrapper(model, noise, step)
+
+            samples = model_to_use.sample(
+                noise=noise,
+                sampler=self.diffusion_sampler,
+                sigma_schedule=self.diffusion_schedule,
+                num_steps=step,
+            )
+            sample = samples #rearrange(samples, "b c t -> b t c").detach().cpu().numpy()
+
+            if is_train:
+                model.train()
+
+            gathered_samples = sample.contiguous()
+            all_images += [sample.cpu() for sample in gathered_samples]
+            
+            number += int(gathered_samples.shape[0])
+        # if not teacher:
+        #     model.train()
+
+        arr = torch.stack(all_images, axis=0)
+
+        return arr
+
 
     @torch.no_grad()
     def log_sample(self, trainer, pl_module, batch):
@@ -251,9 +443,14 @@ class SampleLogger(Callback):
         noise = torch.randn(
             (self.num_items, self.channels, self.length), device=pl_module.device
         )
+        
+        # doing this for sweep to work
+        if type(self.sampling_steps) == int:
+            sampling_steps = [self.sampling_steps]
+        else:
+            sampling_steps = self.sampling_steps
 
-        for steps in self.sampling_steps:
-
+        for steps in sampling_steps:
             samples = model.sample(
                 noise=noise,
                 sampler=self.diffusion_sampler,
