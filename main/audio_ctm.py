@@ -27,6 +27,7 @@ from pytorch_lightning.utilities.rank_zero import rank_zero_only
 from audioldm_eval import EvaluationHelper
 import shutil
 from pathlib import Path
+from torchmetrics.audio import ScaleInvariantSignalNoiseRatio, ScaleInvariantSignalDistortionRatio
 
 
 class CosineWarmupScheduler(optim.lr_scheduler._LRScheduler):
@@ -582,7 +583,7 @@ class UncondSampleLogger(Callback):
         
          
     @torch.no_grad()
-    def sampling(self, model, sampler = 'exact', ctm=None, teacher=False, prefix="", step=-1, num_samples=-1, batch_size=-1, resize=False, generator=None, class_idx = None):
+    def sampling(self, model, sampler = 'exact', ctm=None, teacher=False, prefix="", step=-1, num_samples=-1, batch_size=-1, resize=False, generator=None, class_idx = None, **model_kwargs):
         # if not teacher:
         #     model.eval()
         if step == -1:
@@ -597,7 +598,7 @@ class UncondSampleLogger(Callback):
         model_to_use = self.get_nested_attr(model, prefix)
 
         while num_samples > number:
-            model_kwargs = {}
+            # model_kwargs = {}
             # if self.cfg.data.class_cond:
             #     if class_idx == None:                
             #         model_kwargs["y"] = torch.randint(0, self.cfg.data.num_classes, size=(batch_size, ), device=self.device)
@@ -679,7 +680,7 @@ class UncondSampleLogger(Callback):
 
         # generate random grid class conditional or unconditional
         for step in steps:
-            xh = self.sampling(model=model, sampler=sampler, teacher= True if prefix == "teacher_model" else False, prefix=prefix, step=step, num_samples=1, batch_size=model.cfg.datamodule.batch_size, ctm=True if model.cfg.diffusion.training_mode=="ctm" else False, class_idx = None)
+            xh = self.sampling(model=model, sampler=sampler, teacher= True if prefix == "teacher_model" else False, prefix=prefix, step=step, num_samples=1, batch_size=model.cfg.datamodule.batch_size, ctm=True if model.cfg.diffusion.training_mode=="ctm" and prefix != "teacher_model" else False, class_idx = None)
             xh.clamp(-1.0, 1.0) # (xh * 0.5 + 0.5).clamp(0, 1)
 
             caption = f"{prefix} {step} Steps"
@@ -714,3 +715,243 @@ class UncondSampleLogger(Callback):
                     # wandb_logger.log({}, commit=True)
                 shutil.rmtree(dir1)
                 shutil.rmtree(dir2)
+                
+                
+
+
+class ClassCondSeparateTrackSampleLoggerCTM(UncondSampleLogger):
+    def __init__(
+        self,
+        num_items: int,
+        channels: int,
+        sampling_rate: int,
+        length: int,
+        sampler: List[str] = ["exact"],
+        check_ctm_denoising_ability: bool = True,
+        clip_output: bool = True,
+        clip_denoised: bool = False,
+        denoise_steps_to_log: List[int] = [1],
+        model_to_calculate_metrics: str = "",
+        sampler_to_calculate_metrics: str = "",
+        steps_to_calculate_metrics: int = 0,
+        # Additional parameters for the new class
+        stems: List[str] = ['bass', 'drums', 'guitar', 'piano'],
+        models_to_log: List[str] = ["teacher_model", "net"]
+    ) -> None:
+        # Call the parent class's __init__ method
+        super().__init__(
+            num_items=num_items,
+            channels=channels,
+            sampling_rate=sampling_rate,
+            length=length,
+            sampler="exact",
+            check_ctm_denoising_ability=check_ctm_denoising_ability,
+            clip_output=clip_output,
+            clip_denoised=clip_denoised,
+            denoise_steps_to_log=denoise_steps_to_log,
+            model_to_calculate_metrics=model_to_calculate_metrics,
+            sampler_to_calculate_metrics=sampler_to_calculate_metrics,
+            steps_to_calculate_metrics=steps_to_calculate_metrics
+        )
+        
+        self.sampler = sampler
+        self.stems = stems
+        self.models_to_log = models_to_log
+        
+        self.torch_si_snr = ScaleInvariantSignalNoiseRatio()
+        self.torch_si_sdr = ScaleInvariantSignalDistortionRatio()
+        
+        # Initialize metrics dictionaries for each stem
+        self.metrics_log = {
+            stem: {'si_snr': [], 'si_sdr': [], 'msdm_si_snr': []} for stem in stems
+        }
+
+    def on_validation_epoch_start(self, trainer, pl_module):
+        self.log_next = True
+
+    def on_validation_batch_start(
+        self, trainer, pl_module, batch, batch_idx, 
+        # dataloader_idx
+    ):
+
+        if batch_idx % 5 == 0 or trainer.state.fn == 'validate':
+            self.log_sample(trainer, pl_module, batch, batch_idx)
+
+    def log_sample(self, trainer, pl_module, batch, batch_idx):
+        
+        is_train = pl_module.training
+        if is_train:
+            pl_module.eval()
+
+        wandb_logger = get_wandb_logger(trainer).experiment
+
+        if  batch_idx ==0 and trainer.is_global_zero:
+            original_samples = {} 
+            generated_samples = {}
+            mixture_audios = {}
+            
+            # Generate samples from all the models and log in pairs
+            for step, prefix, sampler in zip(self.denoise_steps_to_log, self.models_to_log, self.sampler):
+                new_original_samples, new_generated_samples, new_mixture_audios = self.generate_model_output(trainer, pl_module, sampler, step, prefix, batch) 
+                original_samples[f"original_samples"] = new_original_samples
+                generated_samples[f"{prefix}_{step}"] = new_generated_samples
+                mixture_audios[f"mixtures"] = new_mixture_audios
+            self.log_audio(original_samples, generated_samples, mixture_audios, wandb_logger)
+
+
+
+        # generate samples form the model that we calculate metrics
+        original_samples, generated_samples, mixture_audios = self.generate_model_output(trainer, pl_module, self.sampler_to_calculate_metrics, self.steps_to_calculate_metrics, self.model_to_calculate_metrics, batch)       
+        self.update_metrics(original_samples, generated_samples, mixture_audios, wandb_logger, trainer)       
+        
+        if is_train:
+            pl_module.train()
+
+    @torch.no_grad()
+    def generate_model_output(self, trainer, pl_module, sampler, steps, prefix, batch):
+
+        # Extract mixture and original audio from the batch
+        waveforms, class_indexes, channels_list, embedding = pl_module.get_input(batch)
+
+        # Dictionary to store generated samples
+        generated_samples = {stem: [] for stem in self.stems}
+
+
+        # Iterate over each one-hot encoded feature vector (each stem)
+        for i, stem in enumerate(self.stems):
+            # Create a feature tensor for the current stem for all items
+            current_features = torch.zeros(waveforms.size(0), len(self.stems)).to(pl_module.device)
+            current_features[:, i] = 1  # Set the current stem feature to 1 (one-hot)
+
+            # Sample from the model using the noise and the current one-hot features
+            xh = self.sampling(model=pl_module, sampler=sampler, teacher= True if prefix == "teacher_model" else False, prefix=prefix, step=steps, num_samples=1, batch_size=waveforms.size(0), ctm=True if pl_module.cfg.diffusion.training_mode=="ctm" and prefix != "teacher_model" else False, class_idx = None, features = current_features, channels_list = channels_list, embedding = None)
+            xh.clamp(-1.0, 1.0) # (xh * 0.5 + 0.5).clamp(0, 1)
+
+            samples = rearrange(xh, "b c t -> b t c").detach().cpu().numpy()
+
+            # Store the generated samples
+            for idx in range(waveforms.size(0)):
+                generated_samples[stem].append(samples[idx])
+                  
+        # get original stems
+        original_samples = {stem: {} for stem in self.stems}
+        
+        original_stems = batch[2]
+        
+        for i, stem in enumerate(self.stems):
+            stem_data = original_stems[:, i]
+            stem_data =rearrange(stem_data, "b c t -> b t c") .detach().cpu().numpy()
+            original_samples[stem] = []
+            for idx in range(waveforms.size(0)):
+                original_samples[stem].append(stem_data[idx])  
+        
+        mixture_audios = batch[2].sum(1)[:, 0, :].detach().cpu().numpy()[..., np.newaxis] #channels_list[0][idx, 0, :].detach().cpu().numpy()[..., np.newaxis]
+        
+        return  original_samples, generated_samples, mixture_audios
+
+    def log_audio(self, original_samples, generated_samples, mixture_audio, wandb_logger):
+        
+        # Log the first item of the batch
+        for idx in range(self.num_items):
+            # Prepare the logging data
+            logging_data = {}
+
+            # Prepare the original mixture log
+            logging_data[f"Mixture_audio"] = wandb.Audio(
+                mixture_audio["mixtures"][idx], 
+                caption=f"Mixture Audio {idx}", 
+                sample_rate=self.sampling_rate
+            )
+
+            # Prepare the original stems logs
+            for stem in self.stems:
+                original_audio = original_samples["original_samples"][stem][idx]
+                logging_data[f"original_{stem}"] = wandb.Audio(
+                    original_audio,
+                    caption=f"Original {stem} Audio {idx}",
+                    sample_rate=self.sampling_rate
+                )
+
+            for generated_samples_key in generated_samples.keys():
+                # Prepare each generated sample for the current stem by number of steps
+                for stem in self.stems:
+                    generated_audio = generated_samples[generated_samples_key][stem][idx]
+                    logging_data[f"generated_{stem}_{generated_samples_key}"] = wandb.Audio(
+                        generated_audio,
+                        caption=f"{stem} Sampled: {idx})",
+                        sample_rate=self.sampling_rate
+                    )
+
+                # Prepare the mixture of the generated samples
+                mix_audio = sum(generated_samples[generated_samples_key][stem][idx] for stem in self.stems)
+                logging_data[f"generated_mix_{generated_samples_key}"] = wandb.Audio(
+                    mix_audio,
+                    caption=f"Sampled Mix (idx: {idx})",
+                    sample_rate=self.sampling_rate
+                )
+
+            # Log all accumulated data
+            wandb_logger.log(logging_data) #step = trainer.global_step+idx)
+            
+    def sisnr(self, preds: torch.Tensor, target: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+        alpha = (torch.sum(preds * target, dim=-1, keepdim=True) + eps) / (torch.sum(target**2, dim=-1, keepdim=True) + eps)
+        target_scaled = alpha * target
+        noise = target_scaled - preds
+        s_target = torch.sum(target_scaled**2, dim=-1) + eps
+        s_error = torch.sum(noise**2, dim=-1) + eps
+        return 10 * torch.log10(s_target / s_error)
+
+
+    def sliding_window(self, tensor, window_size=1024, step_size=512):
+        num_windows = (tensor.size(-1) - window_size) // step_size + 1
+        windows = []
+        for i in range(num_windows):
+            start = i * step_size
+            end = start + window_size
+            windows.append(tensor[..., start:end])
+        return torch.stack(windows, dim=0)        
+            
+    @torch.no_grad()
+    def update_metrics(self, original_samples, generated_samples, mixture_audios, wandb_logger, trainer):
+
+        for stem in self.stems:
+            for idx in range(len(original_samples[stem])):  # Iterate over each sample in the batch
+                original_audio = original_samples[stem][idx]
+                generated_audio = generated_samples[stem][idx]
+                mixture_audio = mixture_audios[idx]
+
+                original_audio = torch.tensor(original_audio).permute(1, 0)
+                generated_audio = torch.tensor(generated_audio).permute(1, 0)
+                mixture_audio = torch.tensor(mixture_audio).permute(1, 0)
+
+                si_snr = self.torch_si_snr(generated_audio, original_audio)
+                si_sdr = self.torch_si_sdr(generated_audio, original_audio)
+                msdm_si_snr = self.sisnr(generated_audio, original_audio) - self.sisnr(mixture_audio, original_audio)
+
+                # Append computed metrics to the corresponding lists
+                self.metrics_log[stem]['si_snr'].append(si_snr.item())
+                self.metrics_log[stem]['si_sdr'].append(si_sdr.item())
+                self.metrics_log[stem]['msdm_si_snr'].append(msdm_si_snr.item())
+
+    
+    def on_validation_epoch_end(self, trainer, pl_module):
+        # wandb_logger = get_wandb_logger(trainer).experiment
+        log_dict = {}
+        
+
+        for stem in self.stems:
+            mean_si_snr = sum(self.metrics_log[stem]['si_snr']) / len(self.metrics_log[stem]['si_snr'])
+            mean_si_sdr = sum(self.metrics_log[stem]['si_sdr']) / len(self.metrics_log[stem]['si_sdr'])
+            mean_msdm_si_snr = sum(self.metrics_log[stem]['msdm_si_snr']) / len(self.metrics_log[stem]['msdm_si_snr'])
+
+            log_dict[f'si_snr/{stem}'] = mean_si_snr
+            log_dict[f'si_sdr/{stem}'] = mean_si_sdr
+            log_dict[f'msdm_si_snr/{stem}'] = mean_msdm_si_snr
+
+
+            # Reset metrics for current stem
+            self.metrics_log[stem]['si_snr'] = []
+            self.metrics_log[stem]['si_sdr'] = []
+            self.metrics_log[stem]['msdm_si_snr'] = []
+        
+        pl_module.log_dict(log_dict, sync_dist=True) # step=trainer.global_step)

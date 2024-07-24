@@ -562,3 +562,33 @@ class ChunkedSupervisedDataset(SupervisedDataset):
             self.only_multisource,
             )
         return track, available_chunks 
+    
+    
+class ChunkedSupervisedDataset_for_extraction(ChunkedSupervisedDataset):
+    def __init__(
+        self,
+        audio_dir: Union[Path, str],
+        stems: List[str],
+        sample_rate: int,
+        max_chunk_size: int,
+        min_chunk_size: int,
+        silence_threshold: Optional[float]= None,
+        only_multisource: bool = False,
+    ):
+        super().__init__(audio_dir=audio_dir, stems=stems, sample_rate=sample_rate, max_chunk_size=max_chunk_size, min_chunk_size=min_chunk_size, silence_threshold=silence_threshold, only_multisource=only_multisource )
+        
+    def __getitem__(self, item: int) -> Tuple[torch.Tensor, ...]:
+        chunk_start, chunk_stop = self.get_chunk_indices(item)
+        tracks = self.get_tracks(self.get_chunk_track(item))
+        tracks = tuple([t[:, chunk_start:chunk_stop] for t in tracks])
+        
+        # Create a zero tensor with the same shape as tracks
+        zero_tensor = torch.zeros_like(tracks[0])
+        
+        # Create a one-hot vector of shape [4, 1, 262144]
+        one_hot_vector = torch.zeros((4))
+        
+        # Stack the existing output to make the shape [4, 1, 262144]
+        stacked_tracks = torch.stack(tracks)#.unsqueeze(1)
+
+        return zero_tensor, one_hot_vector, stacked_tracks   

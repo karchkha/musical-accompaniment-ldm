@@ -691,7 +691,7 @@ class ClassCondSeparateTrackSampleLogger(SampleLogger):
         # if self.log_next == False and batch_idx % 5 == 0:
         #     self.update_metrics(trainer, pl_module, batch)
 
-        if batch_idx % 5 == 0:
+        if batch_idx % 5 == 0 or trainer.state.fn == 'validate':
             self.log_sample(trainer, pl_module, batch, batch_idx)
 
     def log_sample(self, trainer, pl_module, batch, batch_idx):
