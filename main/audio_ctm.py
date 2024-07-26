@@ -460,10 +460,11 @@ class UncondSampleLogger(Callback):
         if batch_idx == 0:
             self.log_sample(trainer, pl_module, batch, batch_idx)
             
-        # this will dave audios for FAD and oter metrcis calculation
-        if self.model_to_calculate_metrics is not None:
-            self.generate_and_save_model_samples(trainer, pl_module, self.sampler_to_calculate_metrics, self.steps_to_calculate_metrics, batch, batch_idx, prefix=self.model_to_calculate_metrics)
-                   
+        # this will save audios for FAD and oter metrcis calculation
+        if batch_idx % 5 == 0 or trainer.state.fn == 'validate':
+            if self.model_to_calculate_metrics is not None:
+                self.generate_and_save_model_samples(trainer, pl_module, self.sampler_to_calculate_metrics, self.steps_to_calculate_metrics, batch, batch_idx, prefix=self.model_to_calculate_metrics)
+                    
             
     def generate_and_save_model_samples(self, trainer, pl_module, sampler, denoise_steps_to_log, batch, batch_idx, prefix=""):   
         

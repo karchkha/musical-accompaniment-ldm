@@ -588,6 +588,23 @@ Time Embeddings
 """
 
 
+#----------------------------------------------------------------------------
+# Timestep embedding used in the DDPM++ and ADM architectures.
+class PositionalEmbedding(torch.nn.Module):
+    def __init__(self, num_channels, max_positions=10000, endpoint=False):
+        super().__init__()
+        self.num_channels = num_channels
+        self.max_positions = max_positions
+        self.endpoint = endpoint
+
+    def forward(self, x):
+        freqs = torch.arange(start=0, end=self.num_channels//2, dtype=torch.float32, device=x.device)
+        freqs = freqs / (self.num_channels // 2 - (1 if self.endpoint else 0))
+        freqs = (1 / self.max_positions) ** freqs
+        x = x.ger(freqs.to(x.dtype))
+        x = torch.cat([x.cos(), x.sin()], dim=1)
+        return x
+
 class LearnedPositionalEmbedding(nn.Module):
     """Used for continuous time"""
 
@@ -952,6 +969,7 @@ class UNet1d(nn.Module):
         context_embedding_features: Optional[int] = None,
         training_mode = '',
         linear_probing=False,
+        time_emb_type="LearnedPositional"
     ):
         super().__init__()
         
@@ -1005,20 +1023,26 @@ class UNet1d(nn.Module):
 
 
         if use_context_time:
-            assert exists(context_mapping_features)
-            self.to_time = nn.Sequential(
-                TimePositionalEmbedding(
-                    dim=channels, out_features=context_mapping_features
-                ),
-                nn.GELU(),
-            )
-            if self.training_mode.lower() == 'ctm':
-                self.to_time_s = nn.Sequential(
+            if time_emb_type=="LearnedPositional":
+                assert exists(context_mapping_features)
+                self.to_time = nn.Sequential(
                     TimePositionalEmbedding(
                         dim=channels, out_features=context_mapping_features
                     ),
                     nn.GELU(),
                 )
+                if self.training_mode.lower() == 'ctm':
+                    self.to_time_s = nn.Sequential(
+                        TimePositionalEmbedding(
+                            dim=channels, out_features=context_mapping_features
+                        ),
+                        nn.GELU(),
+                    )
+            elif time_emb_type=="Positional":
+                assert exists(context_mapping_features)
+                self.to_time = PositionalEmbedding(num_channels=context_mapping_features, endpoint=True)
+                if self.training_mode.lower() == 'ctm':
+                    self.to_time_s = self.to_time # Just usese the same embedding as it is deterministic anyways!              
 
         if use_context_features:
             assert exists(context_features) and exists(context_mapping_features)

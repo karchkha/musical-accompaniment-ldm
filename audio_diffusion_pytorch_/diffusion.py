@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, reduce
 from torch import Tensor
+import tqdm
 
 from .utils import default, exists
 
@@ -227,6 +228,77 @@ class ADPM2Sampler(Sampler):
                     x = x + sigma * torch.randn_like(x)
 
         return source * mask + x * ~mask
+
+
+class MSDMSampler(Sampler):
+    def __init__(self, num_resamples: int = 1, s_churn: float = 0.0):
+        super().__init__()
+        self.s_churn=s_churn 
+        self.num_resamples=num_resamples
+
+    def score_differential(self, x, sigma, denoise_fn):
+        d = (x - denoise_fn(x, sigma=sigma)) / sigma 
+        return d
+
+    @torch.no_grad()
+    def generate_track(
+        self,
+        denoise_fn: Callable,
+        sigmas: torch.Tensor,
+        noises: torch.Tensor,
+        source: Optional[torch.Tensor] = None,
+        mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+
+        x = sigmas[0] * noises
+        _, num_sources, _  = x.shape    
+
+        # Initialize default values
+        source = torch.zeros_like(x) if source is None else source
+        mask = torch.zeros_like(x) if mask is None else mask
+        
+        sigmas = sigmas.to(x.device)
+        gamma = min(self.s_churn / (len(sigmas) - 1), 2**0.5 - 1)
+        
+        # Iterate over all timesteps
+        for i in tqdm.tqdm(range(len(sigmas) - 1)):
+            sigma, sigma_next = sigmas[i], sigmas[i+1]
+
+            # Noise source to current noise level
+            noisy_source = source + sigma*torch.randn_like(source)
+            
+            for r in range(self.num_resamples):
+                # Merge noisy source and current x
+                x = mask*noisy_source + (1.0 - mask)*x 
+
+                # Inject randomness
+                sigma_hat = sigma * (gamma + 1)    
+                x_hat = x + torch.randn_like(x) * (sigma_hat**2 - sigma**2)**0.5
+
+                # Compute conditioned derivative
+                d = self.score_differential(x=x_hat, sigma=sigma_hat, denoise_fn=denoise_fn)
+
+                # Update integral
+                x = x_hat + d*(sigma_next - sigma_hat)
+                    
+                # Renoise if not last resample step
+                if r < self.num_resamples - 1:
+                    x = x + torch.randn_like(x) * (sigma**2 - sigma_next**2)**0.5
+
+        return mask*source + (1.0 - mask)*x
+
+
+    def forward(
+        self, noise: Tensor, fn: Callable, sigmas: Tensor, num_steps: int ) -> Tensor:
+        x = self.generate_track(fn,
+                        sigmas=sigmas,
+                        noises=noise,
+                        )
+        return x
+
+
+
+
 
 
 """ Diffusion Classes """
