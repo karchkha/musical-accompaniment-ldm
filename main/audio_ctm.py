@@ -28,7 +28,8 @@ from audioldm_eval import EvaluationHelper
 import shutil
 from pathlib import Path
 from torchmetrics.audio import ScaleInvariantSignalNoiseRatio, ScaleInvariantSignalDistortionRatio
-
+import json
+import math
 
 class CosineWarmupScheduler(optim.lr_scheduler._LRScheduler):
     def __init__(self, optimizer, warmup, max_iters):
@@ -911,28 +912,100 @@ class ClassCondSeparateTrackSampleLoggerCTM(UncondSampleLogger):
             end = start + window_size
             windows.append(tensor[..., start:end])
         return torch.stack(windows, dim=0)        
-            
+
+    def assert_is_audio(self, *signal: torch.Tensor):
+        for s in signal:
+            assert len(s.shape) == 2
+            assert s.shape[0] == 1 or s.shape[0] == 2
+
+
+    def is_silent(self, signal: torch.Tensor, silence_threshold: float = 1.5e-5) -> bool:
+        self.assert_is_audio(signal)
+        num_samples = signal.shape[-1]
+        return torch.linalg.norm(signal) / num_samples < silence_threshold
+
+
     @torch.no_grad()
-    def update_metrics(self, original_samples, generated_samples, mixture_audios, wandb_logger, trainer):
+    def update_metrics(self, original_samples, generated_samples, mixture_audios, wandb_logger, trainer, chunk_duration = 4.0, overlap_duration = 2.0, eps = 1e-8):
 
-        for stem in self.stems:
-            for idx in range(len(original_samples[stem])):  # Iterate over each sample in the batch
-                original_audio = original_samples[stem][idx]
-                generated_audio = generated_samples[stem][idx]
-                mixture_audio = mixture_audios[idx]
+        chunk_samples = int(chunk_duration * self.sampling_rate)
+        overlap_samples = int(overlap_duration * self.sampling_rate)
 
-                original_audio = torch.tensor(original_audio).permute(1, 0)
-                generated_audio = torch.tensor(generated_audio).permute(1, 0)
-                mixture_audio = torch.tensor(mixture_audio).permute(1, 0)
+        # Calculate the step size between consecutive sub-chunks
+        step_size = chunk_samples - overlap_samples
 
-                si_snr = self.torch_si_snr(generated_audio, original_audio)
-                si_sdr = self.torch_si_sdr(generated_audio, original_audio)
-                msdm_si_snr = self.sisnr(generated_audio, original_audio) - self.sisnr(mixture_audio, original_audio)
+        # Determine the number of evaluation chunks based on step_size
+        num_eval_chunks = math.ceil((self.length - overlap_samples) / step_size)
 
-                # Append computed metrics to the corresponding lists
-                self.metrics_log[stem]['si_snr'].append(si_snr.item())
-                self.metrics_log[stem]['si_sdr'].append(si_sdr.item())
-                self.metrics_log[stem]['msdm_si_snr'].append(msdm_si_snr.item())
+        for idx in range(len(mixture_audios)):
+
+            for j in range(num_eval_chunks):
+
+                start_sample = j * step_size
+                end_sample = start_sample + chunk_samples
+
+                # Ensure the end_sample does not exceed the timesteps
+                if end_sample > self.length:
+                    end_sample = self.length
+
+                # Determine number of active signals in sub-chunk
+                num_active_signals = 0
+                for stem in self.stems:
+                    o = original_samples[stem][idx][start_sample:end_sample, : ]
+                    if not self.is_silent(torch.tensor(o).permute(1, 0)):
+                        num_active_signals += 1
+                
+                # Skip sub-chunk if necessary
+                if num_active_signals <= 1:
+                    continue
+
+                # for steps in self.sampling_steps:
+                for stem in self.stems:
+                    original_audio = original_samples[stem][idx][start_sample:end_sample, :]
+                    generated_audio = generated_samples[stem][idx][start_sample:end_sample, :]
+                    mixture_audio = mixture_audios[idx, start_sample:end_sample, :]
+
+                    original_audio = torch.tensor(original_audio).permute(1, 0)
+                    generated_audio = torch.tensor(generated_audio).permute(1, 0)
+                    mixture_audio = torch.tensor(mixture_audio).permute(1, 0)
+
+                    si_snr = self.torch_si_snr(generated_audio, original_audio)
+                    si_sdr = self.torch_si_sdr(generated_audio, original_audio)
+                    msdm_si_snr_s = self.sisnr(generated_audio, original_audio) 
+                    msdm_si_snr_o = self.sisnr(mixture_audio, original_audio)
+                    msdm_si_snr = msdm_si_snr_s - msdm_si_snr_o
+
+                    # Append computed metrics to the corresponding lists
+                    self.metrics_log[stem]['si_snr'].append(si_snr.item())
+                    self.metrics_log[stem]['si_sdr'].append(si_sdr.item())
+                    self.metrics_log[stem]['msdm_si_snr'].append(msdm_si_snr.item())
+
+        if trainer.is_global_zero:
+            with open(os.path.join(wandb_logger.dir, f'metrics_log_epoch_{trainer.current_epoch}.json'), 'w') as f:
+                json.dump(self.metrics_log, f)
+
+            
+    # @torch.no_grad()
+    # def update_metrics(self, original_samples, generated_samples, mixture_audios, wandb_logger, trainer):
+
+    #     for stem in self.stems:
+    #         for idx in range(len(original_samples[stem])):  # Iterate over each sample in the batch
+    #             original_audio = original_samples[stem][idx]
+    #             generated_audio = generated_samples[stem][idx]
+    #             mixture_audio = mixture_audios[idx]
+
+    #             original_audio = torch.tensor(original_audio).permute(1, 0)
+    #             generated_audio = torch.tensor(generated_audio).permute(1, 0)
+    #             mixture_audio = torch.tensor(mixture_audio).permute(1, 0)
+
+    #             si_snr = self.torch_si_snr(generated_audio, original_audio)
+    #             si_sdr = self.torch_si_sdr(generated_audio, original_audio)
+    #             msdm_si_snr = self.sisnr(generated_audio, original_audio) - self.sisnr(mixture_audio, original_audio)
+
+    #             # Append computed metrics to the corresponding lists
+    #             self.metrics_log[stem]['si_snr'].append(si_snr.item())
+    #             self.metrics_log[stem]['si_sdr'].append(si_sdr.item())
+    #             self.metrics_log[stem]['msdm_si_snr'].append(msdm_si_snr.item())
 
     
     def on_validation_epoch_end(self, trainer, pl_module):

@@ -603,6 +603,7 @@ class PositionalEmbedding(torch.nn.Module):
         freqs = (1 / self.max_positions) ** freqs
         x = x.ger(freqs.to(x.dtype))
         x = torch.cat([x.cos(), x.sin()], dim=1)
+        x = x.reshape(x.shape[0], 2, -1).flip(1).reshape(*x.shape) # swap sin/cos # following SongUnet that also does this!
         return x
 
 class LearnedPositionalEmbedding(nn.Module):
@@ -622,10 +623,25 @@ class LearnedPositionalEmbedding(nn.Module):
         return fouriered
 
 
-def TimePositionalEmbedding(dim: int, out_features: int) -> nn.Module:
+# def TimePositionalEmbedding(dim: int, out_features: int, time_emb_type: str) -> nn.Module:
+#     return nn.Sequential(
+#         LearnedPositionalEmbedding(dim) if time_emb_type == "LearnedPositional" elif time_emb_type == "PositionalEmbedding" PositionalEmbedding(dim, endpoint=True),
+#         nn.Linear(in_features=dim + 1, out_features=out_features),
+#     )
+
+def TimePositionalEmbedding(dim: int, out_features: int, time_emb_type: str) -> nn.Module:
+    if time_emb_type == "LearnedPositional":
+        positional_embedding = LearnedPositionalEmbedding(dim)
+        linear_in_features = dim + 1
+    elif time_emb_type == "Positional":
+        positional_embedding = PositionalEmbedding(dim, endpoint=True)
+        linear_in_features = dim
+    else:
+        raise ValueError(f"Unknown time_emb_type: {time_emb_type}")
+
     return nn.Sequential(
-        LearnedPositionalEmbedding(dim),
-        nn.Linear(in_features=dim + 1, out_features=out_features),
+        positional_embedding,
+        nn.Linear(in_features=linear_in_features, out_features=out_features)
     )
 
 
@@ -1023,26 +1039,26 @@ class UNet1d(nn.Module):
 
 
         if use_context_time:
-            if time_emb_type=="LearnedPositional":
-                assert exists(context_mapping_features)
-                self.to_time = nn.Sequential(
+            # if time_emb_type=="LearnedPositional":
+            assert exists(context_mapping_features)
+            self.to_time = nn.Sequential(
+                TimePositionalEmbedding(
+                    dim=channels, out_features=context_mapping_features, time_emb_type = time_emb_type
+                ),
+                nn.GELU(),
+            )
+            if self.training_mode.lower() == 'ctm':
+                self.to_time_s = nn.Sequential(
                     TimePositionalEmbedding(
-                        dim=channels, out_features=context_mapping_features
+                        dim=channels, out_features=context_mapping_features, time_emb_type = time_emb_type
                     ),
                     nn.GELU(),
                 )
-                if self.training_mode.lower() == 'ctm':
-                    self.to_time_s = nn.Sequential(
-                        TimePositionalEmbedding(
-                            dim=channels, out_features=context_mapping_features
-                        ),
-                        nn.GELU(),
-                    )
-            elif time_emb_type=="Positional":
-                assert exists(context_mapping_features)
-                self.to_time = PositionalEmbedding(num_channels=context_mapping_features, endpoint=True)
-                if self.training_mode.lower() == 'ctm':
-                    self.to_time_s = self.to_time # Just usese the same embedding as it is deterministic anyways!              
+            # elif time_emb_type=="Positional":
+            #     assert exists(context_mapping_features)
+            #     self.to_time = PositionalEmbedding(num_channels=context_mapping_features, endpoint=True)
+            #     if self.training_mode.lower() == 'ctm':
+            #         self.to_time_s = self.to_time # Just usese the same embedding as it is deterministic anyways!              
 
         if use_context_features:
             assert exists(context_features) and exists(context_mapping_features)

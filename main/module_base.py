@@ -895,7 +895,7 @@ class ClassCondSeparateTrackSampleLogger(SampleLogger):
                     self.metrics_log[stem]['msdm_si_snr'].append(msdm_si_snr.item())
 
         if trainer.is_global_zero:
-            with open(os.path.join(wandb_logger.dir, 'metrics_log.json'), 'w') as f:
+            with open(os.path.join(wandb_logger.dir, f'metrics_log_epoch_{trainer.current_epoch}.json'), 'w') as f:
                 json.dump(self.metrics_log, f)
 
     
