@@ -106,6 +106,37 @@ def instantiate_from_config(config, **kwargs):
     config_dict = {k: v for k, v in config.items() if k != '_target_'}
     return cls(**config_dict, **kwargs)
 
+import torch
+class CheckGradientsCallback(pl.Callback):
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+        max_grad_norm = 2.0  # Upper threshold for detecting exploding gradients
+        min_grad_norm = 1e-5  # Lower threshold for detecting vanishing gradients
+        
+        total_grad_norm = 0.0
+        param_count = 0
+        
+        for name, param in pl_module.named_parameters():
+            if param.grad is None:
+                print(f"Parameter {name} has no gradient.")
+            else:
+                grad_norm = param.grad.norm().item()
+                total_grad_norm += grad_norm
+                param_count += 1
+                if grad_norm >= max_grad_norm:
+                    print(f"Parameter {name} gradient: {grad_norm:.6f} (Exploding)")
+                # elif grad_norm <= min_grad_norm:
+                #     print(f"Parameter {name} gradient: {grad_norm:.6f} (Vanishing)")
+                # else:
+                    # print(f"Parameter {name} gradient: {grad_norm:.6f}")
+        
+        if param_count > 0:
+            avg_grad_norm = total_grad_norm / param_count
+            print(f"Average gradient norm: {avg_grad_norm:.6f}")
+        else:
+            print("No gradients found for any parameters.")
+        
+        print()  # Separate outputs for readability
+
 # @click.command()
 # @click.option('--cfg', default='configs/train_audiodm_conditional.yaml', help='Configuration File')
 def main():
@@ -207,6 +238,9 @@ def main():
         for _, cb_conf in vars(cfg.callbacks).items():
             if "_target_" in cb_conf:
                 callbacks.append(instantiate_from_config(cb_conf))
+                
+    # callbacks.append(CheckTrainingStateCallback())
+    # callbacks.append(CheckGradientsCallback())
 
     # Initialize trainer
     trainer = pl.Trainer(**vars(cfg.trainer), callbacks=callbacks, logger=wandb_logger)

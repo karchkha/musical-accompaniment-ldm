@@ -312,6 +312,9 @@ class SampleLogger(Callback):
 
         # Generate model outputs
         new_audios_to_log, new_captions = self.generate_model_output(pl_module, self.diffusion_sampler, sampling_steps, "net", batch)
+
+        # Get GPU identifier
+        gpu_id = torch.cuda.current_device() if torch.cuda.is_available() else "cpu"
         
         for step_idx, step in enumerate(sampling_steps):
             step_dir = os.path.join(base_dir, f'audios_{current_epoch}_step{step}')
@@ -331,9 +334,11 @@ class SampleLogger(Callback):
                 resampled_original_audio = resampler(original_audio.detach())
 
                 # Define file names
-                generated_file_name = os.path.join(generated_dir, f'audio_epoch_{current_epoch}_batch_{batch_idx}_sample_{idx}.wav')
-                original_file_name = os.path.join(original_dir, f'audio_epoch_{current_epoch}_batch_{batch_idx}_sample_{idx}.wav')
-
+                # generated_file_name = os.path.join(generated_dir, f'audio_epoch_{current_epoch}_batch_{batch_idx}_sample_{idx}.wav')
+                # original_file_name = os.path.join(original_dir, f'audio_epoch_{current_epoch}_batch_{batch_idx}_sample_{idx}.wav')
+                # Define file names with GPU identifier
+                generated_file_name = os.path.join(generated_dir, f'audio_epoch_{current_epoch}_batch_{batch_idx}_sample_{idx}_gpu_{gpu_id}.wav')
+                original_file_name = os.path.join(original_dir, f'audio_epoch_{current_epoch}_batch_{batch_idx}_sample_{idx}_gpu_{gpu_id}.wav')
                 # Save audio files
                 torchaudio.save(generated_file_name, resampled_audio, 16000)
                 torchaudio.save(original_file_name, resampled_original_audio, 16000)

@@ -206,8 +206,12 @@ class LogNormalSampler:
 class HalfLogNormalHalfUniformSampler:
     def __init__(self, args, p_mean=-1.2, p_std=1.2, even=False):
         self.args = args
-        self.p_mean = p_mean
-        self.p_std = p_std
+        self.p_mean = getattr(args, 'p_mean', None)
+        self.p_std = getattr(args, 'p_std', None)
+        if self.p_mean is None:
+            self.p_mean = p_mean
+        if self.p_std is None:
+            self.p_std = p_std
         self.even = even
         if self.even:
             self.inv_cdf = lambda x: norm.ppf(x, loc=p_mean, scale=p_std)

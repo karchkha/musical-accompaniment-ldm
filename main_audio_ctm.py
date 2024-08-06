@@ -94,6 +94,83 @@ def instantiate_from_config(config, **kwargs):
     config_dict = {k: v for k, v in config.items() if k != '_target_'}
     return cls(**config_dict, **kwargs)
 
+import torch
+class CheckGradientsCallback(pl.Callback):
+    # def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+    def on_before_optimizer_step(self, trainer, pl_module, optimizer):
+        max_grad_norm = 2.0  # Upper threshold for detecting exploding gradients
+        min_grad_norm = 1e-5  # Lower threshold for detecting vanishing gradients
+        
+        total_grad_norm = 0.0
+        param_count = 0
+        
+        for name, param in pl_module.net.named_parameters():
+            if param.grad is None:
+                print(f"Parameter {name} has no gradient.")
+            else:
+                grad_norm = param.grad.norm().item()
+                total_grad_norm += grad_norm
+                param_count += 1
+                if grad_norm >= max_grad_norm:
+                    print(f"Parameter {name} gradient: {grad_norm:.6f} (Exploding)")
+                # elif grad_norm <= min_grad_norm:
+                    # print(f"Parameter {name} gradient: {grad_norm:.6f} (Vanishing)")
+                # else:
+                    # print(f"Parameter {name} gradient: {grad_norm:.6f}")
+        
+        if param_count > 0:
+            avg_grad_norm = total_grad_norm / param_count
+            print(f"Average gradient norm: {avg_grad_norm:.6f}")
+        else:
+            print("No gradients found for any parameters.")
+        
+        print()  # Separate outputs for readability
+
+
+
+class CheckTrainingStateCallback(pl.Callback):
+    def __init__(self):
+        self.initial_teacher_params = None
+        self.initial_net_params = None
+
+    def on_train_batch_start(self, trainer, pl_module, batch, batch_idx):
+        # Save initial parameters on CPU if not already saved
+        if self.initial_teacher_params is None:
+            self.initial_teacher_params = {name: param.clone().detach().cpu() for name, param in pl_module.teacher_model.named_parameters()}
+        if self.initial_net_params is None:
+            self.initial_net_params = {name: param.clone().detach().cpu() for name, param in pl_module.net.named_parameters()}
+
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+        if batch_idx % 1 == 0:
+            # Ensure teacher model is in evaluation mode and parameters are frozen
+            assert not pl_module.teacher_model.training, "Teacher model should be in eval mode"
+            for name, param in pl_module.teacher_model.named_parameters():
+                assert not param.requires_grad, "Teacher model parameters should be frozen"
+                assert torch.equal(param.cpu(), self.initial_teacher_params[name]), "Teacher model parameters should not change"
+
+            # # Ensure net model is in training mode and parameters are being updated
+            # assert pl_module.net.training, "Net model should be in training mode"
+            # for name, param in pl_module.net.named_parameters():
+            #     assert param.requires_grad, "Net model parameters should be trainable"
+            #     assert not torch.equal(param.cpu(), self.initial_net_params[name]), "Net model parameters should be updating"
+
+            # Ensure net model is in training mode
+            assert pl_module.net.training, "Net model should be in training mode"
+            for name, param in pl_module.net.named_parameters():
+                assert param.requires_grad, "Net model parameters should be trainable"
+                if torch.equal(param.cpu(), self.initial_net_params[name]):
+                    print(f"Parameter {name} has not been updated.")
+                else:
+                    # pass
+                    print(f"Parameter {name} has been updated.")
+
+            # Update initial parameters for the next step on CPU
+            self.initial_net_params = {name: param.clone().detach().cpu() for name, param in pl_module.net.named_parameters()}
+            self.initial_teacher_params = {name: param.clone().detach().cpu() for name, param in pl_module.teacher_model.named_parameters()}
+
+
+
+
 # @click.command()
 # @click.option('--cfg', default='configs/train_audiodm_conditional.yaml', help='Configuration File')
 def main():
@@ -181,9 +258,10 @@ def main():
 
 
     # ### Init Sampler
-    audio_samples_logger = instantiate_from_config(cfg.audio_samples_logger)
+    if cfg.audio_samples_logger is not None:
+        audio_samples_logger = instantiate_from_config(cfg.audio_samples_logger)
 
-    callbacks.append(audio_samples_logger)
+        callbacks.append(audio_samples_logger)
 
     # Initialize all callbacks (e.g. fancy modelsummary and progress bar)
     if "callbacks" in cfg:
@@ -191,6 +269,10 @@ def main():
             if "_target_" in cb_conf:
                 callbacks.append(instantiate_from_config(cb_conf))
 
+    # callbacks.append(CheckTrainingStateCallback())
+    # callbacks.append(CheckGradientsCallback())
+    callbacks.append(pl.callbacks.LearningRateMonitor(logging_interval='step'))
+    
     # Initialize trainer
     trainer = pl.Trainer(**vars(cfg.trainer), callbacks=callbacks, logger=wandb_logger)
 

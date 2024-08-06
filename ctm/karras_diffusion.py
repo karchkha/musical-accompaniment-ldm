@@ -49,6 +49,10 @@ def get_weightings(weight_schedule, snrs, sigma_data, t, s, schedule_multiplier=
     elif weight_schedule == "karras_weight":
         sigma = snrs ** -0.5
         weightings = (sigma ** 2 + sigma_data ** 2) / (sigma * sigma_data) ** 2
+    elif weight_schedule == "karras_weight_s":
+        sigma = snrs ** -0.5 #t #(t+s)*0.5
+        weightings = (sigma * 2 + sigma_data * 2) / (sigma * sigma_data) ** 2
+        weightings = weightings * schedule_multiplier
     elif weight_schedule == "sq-t-inverse":
         weightings = 1. / snrs ** 0.25
     else:
@@ -228,6 +232,10 @@ class KarrasDenoiser:
                 _, estimate = self.get_denoised_and_G(target_model, x_t, t, s=s, ctm=ctm, **model_kwargs)
         else:
             raise NotImplementedError
+        
+        # if self.args.match_point == 'zs':
+        #     return estimate
+        # else:
         if self.args.training_mode == 'ctm':
             if outer_type == 'model':
                 _, estimate = self.get_denoised_and_G(model, estimate, s, s=th.ones_like(s) * self.args.sigma_min,

@@ -375,14 +375,15 @@ class Audio_CTM_Model(pl.LightningModule):
         elif cfg.optimizer == 'sgd':
             optimizer = optim.SGD(self.net.parameters(), lr=cfg.lr)
 
-        lr_scheduler = CosineWarmupScheduler(optimizer=optimizer, warmup=self.cfg.optim.warmup_epochs, max_iters=self.cfg.trainer.max_epochs)
+        # lr_scheduler = CosineWarmupScheduler(optimizer=optimizer, warmup=self.cfg.optim.warmup_epochs, max_iters=self.cfg.trainer.max_epochs)
 
-        return {
-        "optimizer": optimizer,
-            "lr_scheduler": {
-                "scheduler": lr_scheduler,
-            },
-        }
+        return optimizer
+        # return {
+        # "optimizer": optimizer,
+        #     "lr_scheduler": {
+        #         "scheduler": lr_scheduler,
+        #     },
+        # }
     
     
     
@@ -486,6 +487,9 @@ class UncondSampleLogger(Callback):
         # Generate model outputs
         new_audios_to_log, new_captions = self.generate_model_output(pl_module, sampler, sampling_steps, prefix)
 
+        # Get GPU identifier
+        gpu_id = torch.cuda.current_device() if torch.cuda.is_available() else "cpu"
+        
         for step_idx, step in enumerate(sampling_steps):
             step_dir = os.path.join(base_dir, f'audios_{current_epoch}_step{step}')
             generated_dir = os.path.join(step_dir, 'generated')
@@ -503,10 +507,12 @@ class UncondSampleLogger(Callback):
                 resampled_audio = resampler(torch.tensor(audio).permute(1,0))
                 resampled_original_audio = resampler(original_audio.detach())
 
-                # Define file names
-                generated_file_name = os.path.join(generated_dir, f'audio_epoch_{current_epoch}_batch_{batch_idx}_sample_{idx}.wav')
-                original_file_name = os.path.join(original_dir, f'audio_epoch_{current_epoch}_batch_{batch_idx}_sample_{idx}.wav')
-
+                # # Define file names
+                # generated_file_name = os.path.join(generated_dir, f'audio_epoch_{current_epoch}_batch_{batch_idx}_sample_{idx}.wav')
+                # original_file_name = os.path.join(original_dir, f'audio_epoch_{current_epoch}_batch_{batch_idx}_sample_{idx}.wav')
+                # Define file names with GPU identifier
+                generated_file_name = os.path.join(generated_dir, f'audio_epoch_{current_epoch}_batch_{batch_idx}_sample_{idx}_gpu_{gpu_id}.wav')
+                original_file_name = os.path.join(original_dir, f'audio_epoch_{current_epoch}_batch_{batch_idx}_sample_{idx}_gpu_{gpu_id}.wav')
                 # Save audio files
                 torchaudio.save(generated_file_name, resampled_audio, 16000)
                 torchaudio.save(original_file_name, resampled_original_audio, 16000)
@@ -586,8 +592,8 @@ class UncondSampleLogger(Callback):
          
     @torch.no_grad()
     def sampling(self, model, sampler = 'exact', ctm=None, teacher=False, prefix="", step=-1, num_samples=-1, batch_size=-1, resize=False, generator=None, class_idx = None, **model_kwargs):
-        # if not teacher:
-        #     model.eval()
+        if not teacher:
+            model.eval()
         if step == -1:
             step = 1
         if batch_size == -1:
@@ -668,8 +674,8 @@ class UncondSampleLogger(Callback):
             all_images += [sample.cpu() for sample in gathered_samples]
             
             number += int(gathered_samples.shape[0])
-        # if not teacher:
-        #     model.train()
+        if not teacher:
+            model.train()
 
         arr = torch.stack(all_images, axis=0)
 
