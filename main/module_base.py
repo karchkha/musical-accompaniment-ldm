@@ -19,6 +19,7 @@ from audioldm_eval import EvaluationHelper
 from pathlib import Path
 import json
 import math
+from main.model_simple import Audio_DM_Model_simple
 
 """ Model """
 
@@ -72,6 +73,37 @@ class Audio_DM_Model(pl.LightningModule):
 
         self.class_cond = class_cond
         self.separation = separation
+        self.mixture_features_channels = kwargs.pop('mixture_features_channels', None)
+        self.pre_trained_mixture_feature_extractor = kwargs.pop('pre_trained_mixture_feature_extractor', None)
+        # self.mixture_features_channels = mixture_features_channels
+
+        if self.pre_trained_mixture_feature_extractor is not None:
+            # Create a copy of kwargs
+            simple_model_kwargs = kwargs.copy()
+
+            # Remove items that shouldn't be passed to Audio_DM_Model_simple
+            simple_model_kwargs.pop('diffusion_sigma_data', None)
+            simple_model_kwargs.pop('diffusion_dynamic_threshold', None)
+            simple_model_kwargs.pop('diffusion_sigma_distribution', None)
+            # Add any additional arguments required by Audio_DM_Model_simple
+            simple_model_kwargs['use_context_time'] = False
+            
+            # creating models for feature extraction
+            self.pre_trained_mixture_feature_extractor_model = Audio_DM_Model_simple(learning_rate = learning_rate,
+                                                                                    beta1 = beta1,
+                                                                                    beta2 = beta2,
+                                                                                    class_cond = class_cond, 
+                                                                                    separation =  False,
+                                                                                    **simple_model_kwargs
+                                                                                    )
+            # loading pre_trained models from checkpoint
+            print("\nloading pre_trained model for feature extraction from checkpoint:", self.pre_trained_mixture_feature_extractor)
+            self.pre_trained_mixture_feature_extractor_model.load_state_dict(torch.load(self.pre_trained_mixture_feature_extractor, map_location="cpu")["state_dict"])
+
+            # Freeze parameters and set to eval mode
+            for param in self.pre_trained_mixture_feature_extractor_model.parameters():
+                param.requires_grad = False
+            self.pre_trained_mixture_feature_extractor_model.eval()
 
         # if self.class_cond:
         #     self.model = AudioDiffusionConditional(*args, **kwargs)
@@ -90,9 +122,68 @@ class Audio_DM_Model(pl.LightningModule):
         )
         return optimizer
 
-    def get_input(self, batch):
+    def get_input(self, batch, current_class_indexes = None):
 
-        if isinstance(batch, (list, tuple)) and self.class_cond and self.separation:
+        if isinstance(batch, (list, tuple)) and self.class_cond and self.separation and self.pre_trained_mixture_feature_extractor is not None:
+            waveforms, class_indexes, stems  = batch
+
+            batch_size, channels, feature_width = waveforms.shape
+            mixture = stems.sum(1)
+ 
+            # extract features form pre trained model
+            with torch.no_grad():
+                waveforms, class_indexes, channels_list, embedding = self.pre_trained_mixture_feature_extractor_model.get_input(batch)
+
+                # Makeing sure this works well for sapler fustion where we mannually pass index of audio we wan to generate
+                if current_class_indexes is not None:
+                    class_indexes = current_class_indexes
+
+                mixture_features_channels_list = self.pre_trained_mixture_feature_extractor_model.model.unet.get_feature(mixture, features = class_indexes, channels_list=channels_list, embedding = embedding)
+
+            # Modify mixture_features_channels_list: add mixture in the beginign and remove last member
+            mixture_features_channels_list = [mixture] + mixture_features_channels_list[:-1]
+
+            # embedding = torch.randn(2, 4, 32).to(self.device)
+            channels_list = None
+            embedding = None
+
+        elif isinstance(batch, (list, tuple)) and self.class_cond and self.separation and self.mixture_features_channels:
+            waveforms, class_indexes, stems  = batch
+
+            batch_size, channels, feature_width = waveforms.shape
+            mixture = stems.sum(1)
+
+            # Desired output sizes for each layer
+            target_sizes = [262144, 16384, 4096, 1024, 256, 128, 64, 32, 32, 64, 128, 256, 1024, 4096, 16384]  # TODO: this needs to be caclulated automaticaly somehow
+
+            # Create downscaled versions of waveforms using interpolation
+            mixture_features_channels_list = []
+            for size in target_sizes:
+                if feature_width == size:
+                    # No need to resize if the current size matches the target
+                    mixture_features_channels_list.append(mixture)
+                else:
+                    # Resize waveform to the target size
+                    resized_mixture = F.interpolate(mixture, size=(size,), mode='linear', align_corners=False)
+                    mixture_features_channels_list.append(resized_mixture)
+                    # feature_width = size  # Update current length for the next iteration
+
+
+            # Adjust channel dimensions to match `context_channels`
+            # This involves expanding the channel dimension after downsampling
+            mixture_features_channels_list = [
+                torch.cat([mixture_features_channels_list[i]] * num, dim=1) if num != mixture_features_channels_list[i].shape[1]
+                else mixture_features_channels_list[i]
+                for i, num in enumerate(self.mixture_features_channels)
+            ]
+
+            # embedding = torch.randn(2, 4, 32).to(self.device)
+            channels_list = None
+            embedding = None
+
+
+
+        elif isinstance(batch, (list, tuple)) and self.class_cond and self.separation:
             waveforms, class_indexes, stems  = batch
 
             batch_size, channels, feature_width = waveforms.shape
@@ -124,33 +215,37 @@ class Audio_DM_Model(pl.LightningModule):
 
             # embedding = torch.randn(2, 4, 32).to(self.device)
             embedding = None
+            mixture_features_channels_list = None
 
             
         elif isinstance(batch, (list, tuple)) and self.class_cond:
             waveforms, class_indexes, _ = batch
             channels_list = None
             embedding = None
+            mixture_features_channels_list = None
         elif isinstance(batch, (list, tuple)) :
             waveforms, _, _= batch
             class_indexes = None
             channels_list = None  
-            embedding = None          
+            embedding = None   
+            mixture_features_channels_list = None       
         else:
             waveforms = batch
             class_indexes = None
             channels_list = None
             embedding = None
-        return waveforms, class_indexes, channels_list, embedding
+            mixture_features_channels_list = None
+        return waveforms, class_indexes, channels_list, embedding, mixture_features_channels_list
 
     def training_step(self, batch, batch_idx):
-        waveforms, class_indexes, channels_list, embedding = self.get_input(batch)
-        loss = self.model(waveforms, features = class_indexes, channels_list=channels_list, embedding = embedding)
+        waveforms, class_indexes, channels_list, embedding, mixture_features_channels_list = self.get_input(batch)
+        loss = self.model(waveforms, features = class_indexes, channels_list=channels_list, embedding = embedding, mixture_features_channels_list = mixture_features_channels_list)
         self.log("train_loss", loss, sync_dist=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
-        waveforms, class_indexes, channels_list, embedding = self.get_input(batch)
-        loss = self.model(waveforms, features = class_indexes, channels_list=channels_list, embedding = embedding)
+        waveforms, class_indexes, channels_list, embedding, mixture_features_channels_list = self.get_input(batch)
+        loss = self.model(waveforms, features = class_indexes, channels_list=channels_list, embedding = embedding, mixture_features_channels_list= mixture_features_channels_list)
         self.log("valid_loss", loss, sync_dist=True)
         return loss
 
@@ -715,7 +810,7 @@ class ClassCondSeparateTrackSampleLogger(SampleLogger):
         model = pl_module.model
         
         # Extract mixture and original audio from the batch
-        waveforms, class_indexes, channels_list, embedding = pl_module.get_input(batch)
+        waveforms, class_indexes, channels_list, embedding, mixture_features_channels_list = pl_module.get_input(batch)
 
         # Get start diffusion noise for whole batch
         noise = torch.randn(
@@ -735,6 +830,10 @@ class ClassCondSeparateTrackSampleLogger(SampleLogger):
             current_features = torch.zeros(waveforms.size(0), len(self.stems)).to(pl_module.device)
             current_features[:, i] = 1  # Set the current stem feature to 1 (one-hot)
 
+            # extract coresponding featires from the pre-trained model for cuccrent stem we are generating
+            if pl_module.pre_trained_mixture_feature_extractor is not None:
+                waveforms, class_indexes, channels_list, embedding, mixture_features_channels_list = pl_module.get_input(batch, current_features)
+
             # Sample from the model using the noise and the current one-hot features
             samples = model.sample(
                 noise=noise,
@@ -742,7 +841,8 @@ class ClassCondSeparateTrackSampleLogger(SampleLogger):
                 sampler=self.diffusion_sampler,
                 sigma_schedule=self.diffusion_schedule,
                 num_steps=steps,
-                channels_list=channels_list
+                channels_list=channels_list,
+                mixture_features_channels_list=mixture_features_channels_list,
             )
             samples = rearrange(samples, "b c t -> b t c").detach().cpu().numpy()
 
@@ -926,3 +1026,82 @@ class ClassCondSeparateTrackSampleLogger(SampleLogger):
         
         pl_module.log_dict(log_dict, sync_dist=True) # step=trainer.global_step)
 
+
+
+class ClassCondSeparateTrackSampleLogger_simple(ClassCondSeparateTrackSampleLogger):
+    def __init__(
+        self,
+        num_items: int,
+        channels: int,
+        sampling_rate: int,
+        length: int,
+        # sampling_steps: List[int],
+        # diffusion_schedule: Schedule,
+        # diffusion_sampler: Sampler,
+        stems = ['bass', 'drums', 'guitar', 'piano']
+    ) -> None:
+        super().__init__(
+            num_items=num_items,
+            channels=channels,
+            sampling_rate=sampling_rate,
+            length=length,
+            sampling_steps=None,
+            diffusion_schedule=None,
+            diffusion_sampler=None,
+            stems = stems,
+        )
+
+    def generate_sample(self, trainer, pl_module, batch):
+        
+        model = pl_module.model
+        
+        # Extract mixture and original audio from the batch
+        waveforms, class_indexes, channels_list, embedding = pl_module.get_input(batch)
+
+
+        mixtures = batch[-1].sum(1)
+
+        # Get start diffusion noise for whole batch
+        noise = mixtures
+
+        # Dictionary to store generated samples
+        generated_samples = {stem: [] for stem in self.stems}
+        
+        # Iterate over each one-hot encoded feature vector (each stem)
+        for i, stem in enumerate(self.stems):
+            # Create a feature tensor for the current stem for all items
+            current_features = torch.zeros(waveforms.size(0), len(self.stems)).to(pl_module.device)
+            current_features[:, i] = 1  # Set the current stem feature to 1 (one-hot)
+
+            # Sample from the model using the noise and the current one-hot features
+            samples = model.sample(
+                noise=noise,
+                features=current_features,
+                sampler=None,
+                sigma_schedule=None,
+                num_steps=None,
+                channels_list=channels_list
+            )
+            samples = rearrange(samples, "b c t -> b t c").detach().cpu().numpy()
+
+            # Store the generated samples
+            for idx in range(waveforms.size(0)):
+                # if steps not in generated_samples[stem]:
+                #     generated_samples[stem][steps] = []
+                generated_samples[stem].append(samples[idx])
+
+        # get original stems
+        original_samples = {stem: {} for stem in self.stems}
+        
+        original_stems = batch[2]
+        
+        for i, stem in enumerate(self.stems):
+            stem_data = original_stems[:, i]
+            stem_data =rearrange(stem_data, "b c t -> b t c") .detach().cpu().numpy()
+            original_samples[stem] = []
+            for idx in range(waveforms.size(0)):
+                original_samples[stem].append(stem_data[idx])  
+        
+        mixture_audios = batch[2].sum(1)[:, 0, :].detach().cpu().numpy()[..., np.newaxis] #channels_list[0][idx, 0, :].detach().cpu().numpy()[..., np.newaxis]
+        
+        return  original_samples, generated_samples, mixture_audios

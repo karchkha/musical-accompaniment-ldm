@@ -1208,7 +1208,13 @@ class UNet1d(nn.Module):
         features: Optional[Tensor] = None,
         channels_list: Optional[Sequence[Tensor]] = None,
         embedding: Optional[Tensor] = None,
+        mixture_features_channels_list: Optional[Tensor] = None,
     ) -> Tensor:
+
+        # Create a copy of mixture_features_channels_list to avoid modifying the original list
+        if mixture_features_channels_list is not None:
+            mixture_features_channels_list_ = mixture_features_channels_list.copy()
+
         # Concat context channels at layer 0 if provided
         channels = self.get_channels(channels_list, layer=0)
         x = torch.cat([x, channels], dim=1) if exists(channels) else x
@@ -1220,9 +1226,82 @@ class UNet1d(nn.Module):
             if self.linear_probing:
                 mapping_t = self.get_mapping(time, None, which_noise="s") # this logic is directly copied form ctm code. not sure this makes sense and we are not using this option 
             
-        
+        if mixture_features_channels_list is not None and len(mixture_features_channels_list_) > 0:
+            mixture_feature = mixture_features_channels_list_.pop(0)
+            x = x + mixture_feature
         x = self.to_in(x, mapping, mapping_s=None if s == None else mapping_s)
         skips_list = [x]
+
+        for i, downsample in enumerate(self.downsamples):
+            channels = self.get_channels(channels_list, layer=i + 1)
+            if mixture_features_channels_list is not None and len(mixture_features_channels_list_) > 0:
+                mixture_feature = mixture_features_channels_list_.pop(0)
+                x = x + mixture_feature
+            x, skips = downsample(
+                x, mapping=mapping, mapping_s=None if s == None else mapping_s, channels=channels, embedding=embedding
+            )
+            skips_list += [skips]
+
+        if mixture_features_channels_list is not None and len(mixture_features_channels_list_) > 0:
+            mixture_feature = mixture_features_channels_list_.pop(0)
+            x = x + mixture_feature
+        x = self.bottleneck(x, mapping=mapping, mapping_s=None if s == None else mapping_s, embedding=embedding)
+
+        for i, upsample in enumerate(self.upsamples):
+            skips = skips_list.pop()
+            if mixture_features_channels_list is not None and len(mixture_features_channels_list_) > 0:
+                mixture_feature = mixture_features_channels_list_.pop(0)
+                x = x + mixture_feature
+            x = upsample(x, skips, mapping=mapping, mapping_s=None if s == None else mapping_s, embedding=embedding)
+
+        x += skips_list.pop()
+        if mixture_features_channels_list is not None and len(mixture_features_channels_list_) > 0:
+            mixture_feature = mixture_features_channels_list_.pop(0)
+            x = x + mixture_feature
+        x = self.to_out(x, mapping, mapping_s=None if s == None else mapping_s)
+
+        return x
+
+
+    def get_feature(
+        self,
+        x: Tensor,
+        time: Optional[Tensor] = None,
+        s: Optional[Tensor] = None,
+        *,
+        features: Optional[Tensor] = None,
+        channels_list: Optional[Sequence[Tensor]] = None,
+        embedding: Optional[Tensor] = None,
+    ) -> List[Tensor]:
+        """
+        Extracts features at various stages of the network.
+
+        Args:
+            x (Tensor): Input tensor.
+            time (Optional[Tensor]): Timestep tensor.
+            s (Optional[Tensor]): Secondary input tensor for mapping.
+            features (Optional[Tensor]): Additional feature tensor.
+            channels_list (Optional[Sequence[Tensor]]): List of channel tensors.
+            embedding (Optional[Tensor]): Additional embedding tensor.
+
+        Returns:
+            List[Tensor]: List of feature maps at different stages.
+        """
+        # Concat context channels at layer 0 if provided
+        channels = self.get_channels(channels_list, layer=0)
+        x = torch.cat([x, channels], dim=1) if exists(channels) else x
+
+        mapping = self.get_mapping(time, features)
+        
+        if s != None:
+            mapping_s = self.get_mapping(s, features, which_noise="s")
+            if self.linear_probing:
+                mapping_t = self.get_mapping(time, None, which_noise="s") # this logic is directly copied form ctm code. not sure this makes sense and we are not using this option 
+            
+        fmap = []
+        x = self.to_in(x, mapping, mapping_s=None if s == None else mapping_s)
+        skips_list = [x]
+        fmap.append(x)
 
         for i, downsample in enumerate(self.downsamples):
             channels = self.get_channels(channels_list, layer=i + 1)
@@ -1230,18 +1309,21 @@ class UNet1d(nn.Module):
                 x, mapping=mapping, mapping_s=None if s == None else mapping_s, channels=channels, embedding=embedding
             )
             skips_list += [skips]
+            fmap.append(x)
 
         x = self.bottleneck(x, mapping=mapping, mapping_s=None if s == None else mapping_s, embedding=embedding)
+        fmap.append(x)
 
         for i, upsample in enumerate(self.upsamples):
             skips = skips_list.pop()
             x = upsample(x, skips, mapping=mapping, mapping_s=None if s == None else mapping_s, embedding=embedding)
+            fmap.append(x)
 
         x += skips_list.pop()
         x = self.to_out(x, mapping, mapping_s=None if s == None else mapping_s)
+        fmap.append(x)
 
-        return x
-
+        return fmap
 
 class FixedEmbedding(nn.Module):
     def __init__(self, max_length: int, features: int):
