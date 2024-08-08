@@ -468,11 +468,20 @@ class SampleLogger(Callback):
         audios_to_log = []
         captions = []
         
+        waveforms, class_indexes, channels_list, embedding, mixture_features_channels_list = model.get_input(batch)
+        
+        model_kwargs = {}
+        # if self.cfg.model.class_cond:
+        model_kwargs["features"] = class_indexes
+        model_kwargs["channels_list"] = channels_list
+        model_kwargs["embedding"] = embedding
+        model_kwargs["mixture_features_channels_list"] = mixture_features_channels_list
+        
         batch_size = batch[0].size(0)
 
         # generate random grid class conditional or unconditional
         for step in steps:
-            xh = self.sampling(model=model, sampler=sampler, teacher= True if prefix == "teacher_model" else False, prefix=prefix, step=step, num_samples=1, batch_size=batch_size, ctm= False, class_idx = None)
+            xh = self.sampling(model=model, sampler=sampler, teacher= True if prefix == "teacher_model" else False, prefix=prefix, step=step, num_samples=1, batch_size=batch_size, ctm= False, class_idx = None, **model_kwargs)
             xh.clamp(-1.0, 1.0) # (xh * 0.5 + 0.5).clamp(0, 1)
 
             caption = f"{prefix}_{step}_Steps"
@@ -483,7 +492,7 @@ class SampleLogger(Callback):
         return audios_to_log, captions
 
     @torch.no_grad()
-    def sampling(self, model, sampler = 'exact', ctm=None, teacher=False, prefix="", step=-1, num_samples=-1, batch_size=-1, resize=False, generator=None, class_idx = None):
+    def sampling(self, model, sampler = 'exact', ctm=None, teacher=False, prefix="", step=-1, num_samples=-1, batch_size=-1, resize=False, generator=None, class_idx = None, **model_kwargs):
         # if not teacher:
         #     model.eval()
         if step == -1:
@@ -498,7 +507,7 @@ class SampleLogger(Callback):
         model_to_use = model.model
 
         while num_samples > number:
-            model_kwargs = {}
+            # model_kwargs = {}
             is_train = model.training
             if is_train:
                 model.eval()
@@ -515,6 +524,7 @@ class SampleLogger(Callback):
                 sampler=self.diffusion_sampler,
                 sigma_schedule=self.diffusion_schedule,
                 num_steps=step,
+                **model_kwargs
             )
             sample = samples #rearrange(samples, "b c t -> b t c").detach().cpu().numpy()
 
