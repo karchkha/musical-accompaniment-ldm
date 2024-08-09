@@ -723,8 +723,183 @@ class UncondSampleLogger(Callback):
                     # wandb_logger.log({}, commit=True)
                 shutil.rmtree(dir1)
                 shutil.rmtree(dir2)
-                
-                
+
+class ClassCondTrackSampleLoggerCTM(UncondSampleLogger):
+    def __init__(
+        self,
+        num_items: int,
+        channels: int,
+        sampling_rate: int,
+        length: int,
+        sampler: List[str] = ["exact"],
+        check_ctm_denoising_ability: bool = True,
+        clip_output: bool = True,
+        clip_denoised: bool = False,
+        denoise_steps_to_log: List[int] = [1],
+        model_to_calculate_metrics: str = "",
+        sampler_to_calculate_metrics: str = "",
+        steps_to_calculate_metrics: int = 0,
+        # Additional parameters for the new class
+        stems: List[str] = ['bass', 'drums', 'guitar', 'piano'],
+        models_to_log: List[str] = ["teacher_model", "net"]
+    ) -> None:
+        # Call the parent class's __init__ method
+        super().__init__(
+            num_items=num_items,
+            channels=channels,
+            sampling_rate=sampling_rate,
+            length=length,
+            sampler="exact",
+            check_ctm_denoising_ability=check_ctm_denoising_ability,
+            clip_output=clip_output,
+            clip_denoised=clip_denoised,
+            denoise_steps_to_log=denoise_steps_to_log,
+            model_to_calculate_metrics=model_to_calculate_metrics,
+            sampler_to_calculate_metrics=sampler_to_calculate_metrics,
+            steps_to_calculate_metrics=steps_to_calculate_metrics
+        )
+        
+        self.sampler = sampler
+        self.stems = stems
+        self.models_to_log = models_to_log                
+
+    def generate_model_output(self, model, sampler, steps, prefix, batch):
+
+        audios_to_log = []
+        captions = []
+        
+        waveforms, class_indexes, channels_list, embedding = model.get_input(batch)
+        
+        model_kwargs = {}
+        # if self.cfg.model.class_cond:
+        model_kwargs["features"] = class_indexes
+        model_kwargs["channels_list"] = channels_list
+        model_kwargs["embedding"] = embedding
+        # model_kwargs["mixture_features_channels_list"] = mixture_features_channels_list
+        
+        batch_size = batch[0].size(0)
+
+        # generate random grid class conditional or unconditional
+        for step in steps:
+            xh = self.sampling(model=model, sampler=sampler, teacher= True if prefix == "teacher_model" else False, prefix=prefix, step=step, num_samples=1, batch_size=batch_size, ctm= False, class_idx = None, **model_kwargs)
+            xh.clamp(-1.0, 1.0) # (xh * 0.5 + 0.5).clamp(0, 1)
+
+            caption = f"{prefix}_{step}_Steps"
+
+            audios_to_log.append(xh.permute(0, 2, 1).cpu().numpy())
+            captions.append(caption)
+
+        return audios_to_log, captions                
+
+    @torch.no_grad()
+    def log_sample(self, trainer, pl_module, batch, batch_idx):
+        # is_train = pl_module.training
+        # if is_train:
+        #     pl_module.eval()
+
+        wandb_logger = get_wandb_logger(trainer).experiment
+        # model = pl_module.model
+
+        # name = self.cfg.data.name
+        audios_to_log = []
+        captions = []
+
+        # doing this for sweep to work
+        if type(self.denoise_steps_to_log) == int:
+            sampling_steps = [self.denoise_steps_to_log]
+        else:
+            sampling_steps = self.denoise_steps_to_log
+
+        # Log teacher model denoises with heun and 18 steps (if we need to see)
+        if self.check_ctm_denoising_ability:
+            new_audios_to_log, new_captions = self.generate_model_output(pl_module, 'heun', [18], "teacher_model", batch)
+            audios_to_log.extend(new_audios_to_log)
+            captions.extend(new_captions)
+
+        # Log student model outputs
+        new_audios_to_log, new_captions = self.generate_model_output(pl_module, self.sampler,  sampling_steps, "net", batch)
+        audios_to_log.extend(new_audios_to_log)
+        captions.extend(new_captions)
+
+        # Log target model outputs
+        new_audios_to_log, new_captions = self.generate_model_output(pl_module, self.sampler,  sampling_steps, "target_model", batch)
+        audios_to_log.extend(new_audios_to_log)
+        captions.extend(new_captions)
+
+
+        # Log EMA models outputs
+        for i, ema_rate in enumerate(pl_module.cfg.diffusion.ema_rate):
+            new_audios_to_log, new_captions = self.generate_model_output(pl_module, self.sampler,  sampling_steps, f"ema_models[{i}]", batch)
+            audios_to_log.extend(new_audios_to_log)
+            captions.extend(new_captions)
+
+        # Extract mixture and original audio from the batch
+        waveforms, class_indexes, channels_list, embedding = pl_module.get_input(batch)
+
+        # log original data
+        original_audio = waveforms[:self.num_items].clamp(-1.0, 1.0)
+        audios_to_log.append(original_audio.permute(0, 2, 1).cpu().numpy())
+        captions.append("Original")
+        ##################################
+
+
+        # Log one sample of the original and generated images for the first batch in the epoch
+        if trainer.is_global_zero and batch_idx==0:            
+            for idx in range(self.num_items):
+                logging_data = {}
+                for i, caption in enumerate(captions):
+                    audio = audios_to_log[i][idx]
+                    logging_data[caption] = wandb.Audio(audio, sample_rate=self.sampling_rate, caption=f"batch_{batch_idx}_N_{idx}") # TODO: Make validation epoch number here instaed of batch index
+                wandb_logger.log(logging_data)
+
+    def generate_and_save_model_samples(self, trainer, pl_module, sampler, denoise_steps_to_log, batch, batch_idx, prefix=""):   
+        
+        current_epoch = trainer.current_epoch
+        
+        new_sampling_rate = 16000 # because FAD is calculated of 16000
+        
+        # Create base directory path
+        base_dir = os.path.dirname(pl_module._trainer.checkpoint_callback.dirpath)
+        resampler = torchaudio.transforms.Resample(self.sampling_rate, new_sampling_rate)
+        
+        # doing this for sweep to work
+        if type(denoise_steps_to_log) == int:
+            sampling_steps = [denoise_steps_to_log]
+        else:
+            sampling_steps = denoise_steps_to_log
+                     
+        # Generate model outputs
+        new_audios_to_log, new_captions = self.generate_model_output(pl_module, sampler, sampling_steps, prefix, batch)
+
+        # Get GPU identifier
+        gpu_id = torch.cuda.current_device() if torch.cuda.is_available() else "cpu"
+        
+        for step_idx, step in enumerate(sampling_steps):
+            step_dir = os.path.join(base_dir, f'audios_{current_epoch}_step{step}')
+            generated_dir = os.path.join(step_dir, 'generated')
+            original_dir = os.path.join(step_dir, 'original')
+
+            # Create directories if they don't exist
+            os.makedirs(generated_dir, exist_ok=True)
+            os.makedirs(original_dir, exist_ok=True)
+            
+            for idx in range(batch[0].size(0)):
+                audio = new_audios_to_log[step_idx][idx]  # Ensure tensor is on CPU
+                original_audio = batch[0][idx].cpu()  # Ensure tensor is on CPU
+
+                # Resample audio
+                resampled_audio = resampler(torch.tensor(audio).permute(1,0))
+                resampled_original_audio = resampler(original_audio.detach())
+
+                # # Define file names
+                # generated_file_name = os.path.join(generated_dir, f'audio_epoch_{current_epoch}_batch_{batch_idx}_sample_{idx}.wav')
+                # original_file_name = os.path.join(original_dir, f'audio_epoch_{current_epoch}_batch_{batch_idx}_sample_{idx}.wav')
+                # Define file names with GPU identifier
+                generated_file_name = os.path.join(generated_dir, f'audio_epoch_{current_epoch}_batch_{batch_idx}_sample_{idx}_gpu_{gpu_id}.wav')
+                original_file_name = os.path.join(original_dir, f'audio_epoch_{current_epoch}_batch_{batch_idx}_sample_{idx}_gpu_{gpu_id}.wav')
+                # Save audio files
+                torchaudio.save(generated_file_name, resampled_audio, 16000)
+                torchaudio.save(original_file_name, resampled_original_audio, 16000)
 
 
 class ClassCondSeparateTrackSampleLoggerCTM(UncondSampleLogger):
