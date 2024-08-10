@@ -885,7 +885,7 @@ class ClassCondTrackSampleLoggerCTM(UncondSampleLogger):
 
         # generate random grid class conditional or unconditional
         for step in steps:
-            xh = self.sampling(model=model, sampler=sampler, teacher= True if prefix == "teacher_model" else False, prefix=prefix, step=step, num_samples=1, batch_size=batch_size, ctm= False, class_idx = None, **model_kwargs)
+            xh = self.sampling(model=model, sampler=sampler, teacher= True if prefix == "teacher_model" else False, prefix=prefix, step=step, num_samples=1, batch_size=batch_size, ctm= True if model.cfg.diffusion.training_mode=="ctm" and prefix != "teacher_model" else False, **model_kwargs)
             xh.clamp(-1.0, 1.0) # (xh * 0.5 + 0.5).clamp(0, 1)
 
             caption = f"{prefix} {step} Steps"
