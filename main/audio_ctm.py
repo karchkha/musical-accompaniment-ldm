@@ -784,7 +784,7 @@ class ClassCondTrackSampleLoggerCTM(UncondSampleLogger):
             xh = self.sampling(model=model, sampler=sampler, teacher= True if prefix == "teacher_model" else False, prefix=prefix, step=step, num_samples=1, batch_size=batch_size, ctm= False, class_idx = None, **model_kwargs)
             xh.clamp(-1.0, 1.0) # (xh * 0.5 + 0.5).clamp(0, 1)
 
-            caption = f"{prefix}_{step}_Steps"
+            caption = f"{prefix} {step} Steps"
 
             audios_to_log.append(xh.permute(0, 2, 1).cpu().numpy())
             captions.append(caption)
