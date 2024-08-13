@@ -54,7 +54,7 @@ class Audio_CTM_Model(pl.LightningModule):
         self.cfg = cfg
         self.save_hyperparameters()
 
-        if cfg.diffusion.preconditioning == 'ctm':
+        if cfg.diffusion.preconditioning in ['ctm', 'cd'] :
 
             self.ema_scale_fn = EMAAndScales_Initialiser(target_ema_mode=self.cfg.diffusion.target_ema_mode,
                                                         start_ema=self.cfg.diffusion.start_ema,

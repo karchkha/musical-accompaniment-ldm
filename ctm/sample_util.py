@@ -59,7 +59,7 @@ def karras_sample(
         elif generator_type == 'determ':
             generator = get_generator('determ', 10000, 0)
 
-    if sampler in ["progdist", 'euler', 'exact', 'cm_multistep', 'gamma_multistep']:
+    if sampler in ["progdist", 'euler', 'exact', 'cm_multistep', "cm_multistep_cd", 'gamma_multistep']:
         sigmas = get_sigmas_karras(steps + 1, sigma_min, sigma_max, rho, device=device)
     else:
         sigmas = get_sigmas_karras(steps, sigma_min, sigma_max, rho, device=device)
@@ -79,13 +79,14 @@ def karras_sample(
         "euler": sample_euler,
         "multistep": stochastic_iterative_sampler,
         "cm_multistep": sample_multistep,
+        "cm_multistep_cd": sample_multistep_cd
     }[sampler]
 
     if sampler in ["heun", "dpm"]:
         sampler_args = dict(
             s_churn=s_churn, s_tmin=s_tmin, s_tmax=s_tmax, s_noise=s_noise
         )
-    elif sampler in ["multistep", "exact", "cm_multistep"]:
+    elif sampler in ["multistep", "exact", "cm_multistep", "cm_multistep_cd"]:
         sampler_args = dict(
             ts=ts, t_min=sigma_min, t_max=sigma_max, rho=rho, steps=steps
         )
@@ -105,7 +106,7 @@ def karras_sample(
     #print("clip_denoised, clip_output: ", clip_denoised, clip_output)
     def denoiser(x_t, t, s=th.ones(x_T.shape[0], device=device)):
         denoised, G_theta = diffusion.get_denoised_and_G(model, x_t, t, s, ctm, teacher, **model_kwargs)
-        if sampler in ['exact', 'cm_multistep', 'onestep', 'gamma_multistep', 'gamma']:
+        if sampler in ['exact', 'cm_multistep', "cm_multistep_cd", 'onestep', 'gamma_multistep', 'gamma']:
             denoised = G_theta
         if clip_denoised:
             #print("clip denoised!!!")
@@ -262,7 +263,7 @@ def sample_multistep(
 
 
 @th.no_grad()
-def sample_multistep(
+def sample_multistep_cd(
     denoiser,
     x,
     sigmas,
@@ -296,12 +297,12 @@ def sample_multistep(
 
     for i in indices[:-1]:
         sigma = sigmas[i]
-        print(i, sigma, sigmas[i+1])
+        # print(i, sigma, sigmas[i+1])
         #print(0.002 * s_in)
-        denoised = denoiser(x, sigma * s_in, s=0.002 * s_in)
+        denoised = denoiser(x, sigma * s_in, s= None)
         if i < len(indices) - 2:
-            print(th.sqrt(sigmas[i+1] ** 2 - 0.002 ** 2).item())
-            x = denoised + th.sqrt(sigmas[i+1] ** 2 - 0.002 ** 2) * th.randn_like(denoised)
+            # print(th.sqrt(sigmas[i+1] ** 2 - t_min ** 2).item())
+            x = denoised + th.sqrt(sigmas[i+1] ** 2 - t_min ** 2) * th.randn_like(denoised)
         else:
             x = denoised
 
