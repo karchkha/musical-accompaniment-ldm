@@ -391,7 +391,10 @@ class KarrasDenoiser:
         noise = th.randn_like(x_start)
         dims = x_start.ndim
         x_t = x_start + noise * append_dims(sigmas, dims)
-        denoised, _ = self.get_denoised_and_G(model, x_t, sigmas, s=sigmas, ctm=True, teacher=True, **model_kwargs)
+        if self.args.training_mode == 'ctm':
+            denoised, _ = self.get_denoised_and_G(model, x_t, sigmas, s=sigmas, ctm=True, teacher=True, **model_kwargs)
+        elif self.args.training_mode == 'cd':
+            denoised, _ = self.get_denoised_and_G(model, x_t, sigmas, s=None, ctm=False, teacher=False, **model_kwargs)
         snrs = self.get_snr(sigmas)
         denoising_weights = append_dims(get_weightings(self.args.diffusion_weight_schedule, snrs, self.args.sigma_data, None, None), dims)
         denoising_loss = mean_flat(denoising_weights * (denoised - x_start) ** 2)
