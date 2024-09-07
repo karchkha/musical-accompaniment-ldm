@@ -250,7 +250,7 @@ class MSDMSampler(Sampler):
         mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
 
-        x = sigmas[0] * noises
+        x = sigmas[0] * noises[0] + noises[1]
         _, num_sources, _  = x.shape    
 
         # Initialize default values
@@ -420,7 +420,7 @@ class DiffusionSampler(nn.Module):
     def forward(
         self, noise: Tensor, num_steps: Optional[int] = None, **kwargs
     ) -> Tensor:
-        device = noise.device
+        device = noise[0].device
         num_steps = default(num_steps, self.num_steps)  # type: ignore
         assert exists(num_steps), "Parameter `num_steps` must be provided"
         # Compute sigmas using schedule

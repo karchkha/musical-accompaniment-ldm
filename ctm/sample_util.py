@@ -65,7 +65,7 @@ def karras_sample(
         sigmas = get_sigmas_karras(steps, sigma_min, sigma_max, rho, device=device)
 
     if x_T == None:
-        x_T = generator.randn(*shape, device=device) * sigma_max
+        x_T = model_kwargs['mixture_features_channels_list'].pop() + generator.randn(*shape, device=device) * sigma_max
 
     sample_fn = {
         "heun": sample_heun,

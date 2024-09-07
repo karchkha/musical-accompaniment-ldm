@@ -141,7 +141,7 @@ class Audio_DM_Model(pl.LightningModule):
                 mixture_features_channels_list = self.pre_trained_mixture_feature_extractor_model.model.unet.get_feature(mixture, features = class_indexes, channels_list=channels_list, embedding = embedding)
 
             # Modify mixture_features_channels_list: add mixture in the beginign and remove last member
-            mixture_features_channels_list = [mixture] + mixture_features_channels_list[:-1]
+            mixture_features_channels_list = [mixture] + mixture_features_channels_list #[:-1]
 
             # embedding = torch.randn(2, 4, 32).to(self.device)
             channels_list = None
@@ -822,10 +822,10 @@ class ClassCondSeparateTrackSampleLogger(SampleLogger):
         # Extract mixture and original audio from the batch
         waveforms, class_indexes, channels_list, embedding, mixture_features_channels_list = pl_module.get_input(batch)
 
-        # Get start diffusion noise for whole batch
-        noise = torch.randn(
-            (waveforms.size(0), self.channels, self.length), device=pl_module.device
-        )
+        # # Get start diffusion noise for whole batch
+        # noise = torch.randn(
+        #     (waveforms.size(0), self.channels, self.length), device=pl_module.device
+        # )
 
         # Dictionary to store generated samples
         generated_samples = {stem: [] for stem in self.stems}
@@ -843,6 +843,13 @@ class ClassCondSeparateTrackSampleLogger(SampleLogger):
             # extract coresponding featires from the pre-trained model for cuccrent stem we are generating
             if pl_module.pre_trained_mixture_feature_extractor is not None:
                 waveforms, class_indexes, channels_list, embedding, mixture_features_channels_list = pl_module.get_input(batch, current_features)
+
+            # Get start diffusion noise for whole batch
+            noise = torch.randn(
+                (waveforms.size(0), self.channels, self.length), device=pl_module.device
+            )
+
+            noise = [noise, mixture_features_channels_list.pop()]
 
             # Sample from the model using the noise and the current one-hot features
             samples = model.sample(
