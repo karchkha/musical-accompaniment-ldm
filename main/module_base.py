@@ -1022,10 +1022,10 @@ class ClassCondSeparateTrackSampleLogger(SampleLogger):
 
     
     def on_validation_epoch_end(self, trainer, pl_module):
-        # wandb_logger = get_wandb_logger(trainer).experiment
         log_dict = {}
+        total_msdm_si_snr = 0
+        num_stems = len(self.stems)
         
-        # for steps in self.sampling_steps:
         for stem in self.stems:
             mean_si_snr = sum(self.metrics_log[stem]['si_snr']) / len(self.metrics_log[stem]['si_snr'])
             mean_si_sdr = sum(self.metrics_log[stem]['si_sdr']) / len(self.metrics_log[stem]['si_sdr'])
@@ -1035,12 +1035,19 @@ class ClassCondSeparateTrackSampleLogger(SampleLogger):
             log_dict[f'si_sdr/{stem}'] = mean_si_sdr
             log_dict[f'msdm_si_snr/{stem}'] = mean_msdm_si_snr
 
+            # Accumulate total msdm_si_snr for averaging later
+            total_msdm_si_snr += mean_msdm_si_snr
 
-            # Reset metrics for the current number of steps and stem
+            # Reset metrics for current stem
             self.metrics_log[stem]['si_snr'] = []
             self.metrics_log[stem]['si_sdr'] = []
             self.metrics_log[stem]['msdm_si_snr'] = []
         
+        # Calculate the average of msdm_si_snr across all instruments
+        mean_msdm_si_snr_avg = total_msdm_si_snr / num_stems
+        log_dict[f'msdm_si_snr_avg'] = mean_msdm_si_snr_avg
+
+        # Log the results
         pl_module.log_dict(log_dict, sync_dist=True) # step=trainer.global_step)
 
 
