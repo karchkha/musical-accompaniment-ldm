@@ -52,11 +52,15 @@ class KarrasSchedule(Schedule):
     def forward(self, num_steps: int, device: Any) -> Tensor:
         rho_inv = 1.0 / self.rho
         steps = torch.arange(num_steps, device=device, dtype=torch.float32)
-        sigmas = (
-            self.sigma_max ** rho_inv
-            + (steps / (num_steps - 1))
-            * (self.sigma_min ** rho_inv - self.sigma_max ** rho_inv)
-        ) ** self.rho
+        
+        if num_steps == 1:
+            sigmas = torch.tensor([self.sigma_max], device=device, dtype=torch.float32)
+        else:
+            sigmas = (
+                self.sigma_max ** rho_inv
+                + (steps / (num_steps - 1))
+                * (self.sigma_min ** rho_inv - self.sigma_max ** rho_inv)
+            ) ** self.rho
         sigmas = F.pad(sigmas, pad=(0, 1), value=0.0)
         return sigmas
 
