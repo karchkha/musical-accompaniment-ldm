@@ -426,10 +426,11 @@ def main():
 
     ckpt_callback = ModelCheckpoint(
         dirpath=checkpoint_path,
-        save_top_k=0,
-        monitor="valid_loss",
+        save_top_k=2,
+        monitor="msdm_si_snr_avg",
+        mode="max",
         save_last=True,
-        filename='{epoch}-{val_loss:.4f}',
+        filename='{epoch}-{msdm_si_snr_avg:.4f}',
         every_n_train_steps=None
     )
 

@@ -1,104 +1,116 @@
-# [ICLR'24] Consistency Trajectory Model (CTM)
-<p align="center">
-<img src="/assets/icon.png" alt="ctm" width="60%"/>
-</p>
-This repository houses the official PyTorch implementation of the paper titled "Consistency Trajectory Models: Learning Probability Flow ODE Trajectory of Diffusion" on ImageNet 64x64, which is presented at ICLR 2024.
+# Improving Source Extraction with Diffusion and Consistency Models
 
-* [arXiv](https://arxiv.org/abs/2310.02279)
-* [Project Page](https://consistencytrajectorymodel.github.io/CTM/) 
-* [OpenReview](https://openreview.net/forum?id=ymjI8feDTD)
-* [Codes of other datasets (to be released...)](https://github.com/Kim-Dongjun)
+<p align="center"></p>
 
-Contacts:
-* Dongjun KIM: <a href="dongjun@stanford.edu">dongjun@stanford.edu</a>
-* Chieh-Hsin (Jesse) LAI: <a href="chieh-hsin.lai@sony.com">chieh-hsin.lai@sony.com</a>
+This repository houses the official PyTorch implementation of the paper titled **"Improving Source Extraction with Diffusion and Consistency Models"** on the Slakh2100 dataset. The paper was presented as an oral presentation at **NeurIPS 2024 Workshop Audio Imagination: AI-Driven Speech, Music, and Sound Generation**.
 
-## TL;DR
-For single-step diffusion model sampling, our new model, Consistency Trajectory Model (CTM), achieves SOTA on CIFAR-10 (FID 1.73) and ImageNet 64x64 (FID 1.92). CTM offers diverse sampling options and balances computational budget with sample fidelity effectively.
+- [arXiv](link here)  
+- [Demo Page](https://consistency-separation.github.io/)  
+- [OpenReview](https://openreview.net/forum?id=nskR7tWE6z)  
+
+**Contacts**:
+- Tornike Karchkhadze: [tkarchkhadze@ucsd.edu](mailto:tkarchkhadze@ucsd.edu)  
+- Mohammad Rasool Izadi: [russell_izadi@bose.com](mailto:russell_izadi@bose.com)
+
+---
+
+## Abstract
+
+In this work, we integrate a score-matching diffusion model into a standard deterministic architecture for time-domain musical source extraction. To address the typically slow iterative sampling process of diffusion models, we apply consistency distillation and reduce the sampling process to a single step, achieving performance comparable to that of diffusion models. With two or more steps, the model even surpasses diffusion models. Trained on the Slakh2100 dataset for four instruments (bass, drums, guitar, and piano), our model demonstrates significant improvements across objective metrics compared to baseline methods.
+
+---
 
 ## Checkpoints
-- Download and put the [checkpoints](https://drive.google.com/drive/folders/1KPF3tWLRad3n18XJ1TD7J04XtoMIQ8QV?usp=sharing) in the file of author_ckpt
-- [CTM checkpoint](https://drive.google.com/file/d/17XHwI5-IDpATRnBsxjOi6YCg1oD3MGC6/view?usp=sharing) on ImageNet64 (ema=0.999) 
 
+Please contact the authors for checkpoints.
 
+---
 
-## Prereqruisites
+## Prerequisites
 
-1. Download (or obtain) the following files
+### 1. Dataset
 
-    - Pretrained diffusion model: Please locate it in `args.teacher_model_path`
-    - Data: Please locate it in `args.data_dir`
-    (Note that the data we use is NOT the downsampled image data. It is ILSVRC2012 data. There are huge performance gap between those two datasets.)
-    - Reference statistics: statistics for computing FID, sFID, IS, precision, recall. Please locate them in `args.ref_path`
+In this project, the Slakh2100 dataset is used.  
+Please follow the instructions for data download and setup provided here:  
+[Slakh2100 Data Setup](https://github.com/gladia-research-group/multi-source-diffusion-models/blob/main/data/README.md)
 
-2. Install docker to your own server
+### 2. Conda Environment Setup
 
-    2-1.  Type `docker pull dongjun57/ctm-docker:latest` to download docker image in docker hub.
-    
-    2-2.  Create a container by typing in the command: 
-        ```
-        docker run --gpus=all -itd -v /etc/localtime:/etc/localtime:ro -v /dev/shm:/dev/shm -v [specified directory]:[specified directory] -v /hdd/imagenet/imagenet_dir/train:/hdd/imagenet/imagenet_dir/train -v [specified data directory]:[specified data directory] --name ctm-docker 8caa2682d007
-        ```
-        The commands could vary by your server environment.
+This repository uses Python 3.9.19.  
 
-    2-3. Go to the container by `docker exec -it ctm-docker bash`.
-    
-    2-4. Go to the virtual environment by `conda activate ctm`.
+```bash
+# Create environment
+conda env create -f environment.yaml
 
-3. Make sure the dependencies consistent with the following.
+# Activate environment
+conda activate ctm
+```
 
+---
 
-    ```
-    apt install git
-    apt install libopenmpi-dev
-    python -m pip install tensorflow[and-cuda]
-    python -m pip install torch torchvision torchaudio
-    python -m pip install blobfile tqdm numpy scipy pandas Cython piq==0.7.0
-    python -m pip install joblib==0.14.0 albumentations==0.4.3 lmdb clip@git+https://github.com/openai/CLIP.git pillow
-    python -m pip install flash-attn --no-build-isolation
-    python -m pip install xformers
-    python -m pip install mpi4py
-    python -m pip install nvidia-ml-py3 timm==0.4.12 legacy dill nvidia-ml-py3
-    ```
-    
 ## Training
-- For CTM+DSM training, run `bash commands/CTM+DSM_command.sh` 
 
-    Recommendation: at least run CTM+DSM for 10~50k iterations
+### Deterministic Model Training
+```bash
+python train_audio_simple.py --cfg configs/deterministic_model/cond_separation_simple_no_diff_train.yaml
+```
 
-- For CTM+DSM+GAN training, run `bash commands/CTM+DSM+GAN_command.sh`
- 
-    Recommendation: at least run CTM+DSM+GAN for >=30k iterations
+### Diffusion Model Training
+```bash
+python train_audio.py --cfg configs/diffusion_model/train_audiodm_cond_separation_unet_every_layer_pre_trained_feature_extractor.yaml
+```
 
+### Consistency Model Training
+```bash
+python main_audio_ctm.py --cfg configs/consistency_model/CD_sourse_extraction_unet_every_layer_pre_trained_feature_extractor_train.yaml
+```
 
+---
 
-## Sampling
+## Sampling and Evaluation
 
-Please see `commands/sampling_commands.sh` for detailed sampling commands.
+### Deterministic Model Evaluation
+```bash
+python train_audio_simple.py --cfg configs/deterministic_model/cond_separation_simple_no_diff_eval.yaml
+```
 
+### Diffusion Model Evaluation
+```bash
+python train_audio.py --cfg configs/diffusion_model/Diff_cond_separation_unet_every_layer_pre_trained_feature_extractor_eval_MSDMSampler.yaml
+```
 
-## Evaluating
+### Consistency Model Evaluation
+```bash
+python main_audio_ctm.py --cfg configs/consistency_model/CD_sourse_extraction_unet_every_layer_pre_trained_feature_extractor_eval.yaml
+```
 
-Run `python3.8 evaluations/evaluator.py [location_of_statistics] [location_of_samples]` 
+---
 
-The first argument is the reference path and the second argument is the folder of your samples (>=50k samples for correct evaluation).
+Here’s an updated section to acknowledge the codebases your work was built upon. You can include this in your README file:
 
+---
 
-Please refer to the statistics of [ADM (Prafulla Dhariwal, Alex Nichol)](https://github.com/openai/guided-diffusion).
+## Acknowledgments
 
+This codebase builds upon and integrates ideas and components from the following repositories:
 
-## Customized dataset
-Users need to manually replace the data_name with your data name: manually modify the data_name in `cm_train.py` or `image_sample.py`
+- [Sony CTM](https://github.com/sony/ctm)  
+- [Multi-Source Diffusion Models](https://github.com/gladia-research-group/multi-source-diffusion-models)  
+- [Audio Diffusion PyTorch (Version 0.43)](https://github.com/archinetai/audio-diffusion-pytorch)  
 
+We greatly appreciate the authors of these repositories for their contributions to the field and for making their work publicly available.
 
+--- 
 
 ## Citations
 
-
-```
-@article{kim2023consistency,
-  title={Consistency Trajectory Models: Learning Probability Flow ODE Trajectory of Diffusion},
-  author={Kim, Dongjun and Lai, Chieh-Hsin and Liao, Wei-Hsiang and Murata, Naoki and Takida, Yuhta and Uesaka, Toshimitsu and He, Yutong and Mitsufuji, Yuki and Ermon, Stefano},
-  journal={arXiv preprint arXiv:2310.02279},
-  year={2023}
+```bibtex
+@inproceedings{
+karchkhadze2024improving,
+title={Improving Source Extraction with Diffusion and Consistency Models},
+author={Tornike Karchkhadze and Mohammad Rasool Izadi and Shuo Zhang},
+booktitle={Audio Imagination: NeurIPS 2024 Workshop AI-Driven Speech, Music, and Sound Generation},
+year={2024},
+url={https://openreview.net/forum?id=nskR7tWE6z}
+}
 ```
