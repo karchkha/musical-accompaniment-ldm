@@ -12,6 +12,8 @@ This repository houses the official PyTorch implementation of the paper titled *
 - Tornike Karchkhadze: [tkarchkhadze@ucsd.edu](mailto:tkarchkhadze@ucsd.edu)  
 - Mohammad Rasool Izadi: [russell_izadi@bose.com](mailto:russell_izadi@bose.com)
 
+*The work was done during Tornike's internship at Bose Corporation.
+
 ---
 
 ## Abstract
