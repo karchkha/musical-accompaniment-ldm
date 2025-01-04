@@ -181,7 +181,74 @@ class Audio_DM_Model(pl.LightningModule):
             channels_list = None
             embedding = None
 
+        elif isinstance(batch, (list, tuple)) and self.class_cond and not self.separation and self.mixture_features_channels:
+            waveforms, class_indexes, stems  = batch
 
+            batch_size, channels, feature_width = waveforms.shape
+            
+            if current_class_indexes is not None:
+                # Get the active index from the one-hot vector
+                active_index = current_class_indexes.argmax(dim=1)
+                # Create a mask to exclude the active index
+                mask = torch.arange(stems.size(1), device=stems.device).unsqueeze(0) != active_index.unsqueeze(1)
+                # Sum all stems except the one at `active_index`
+                mixture = (stems * mask.unsqueeze(-1).unsqueeze(-1)).sum(1)
+            else:
+                mixture = stems.sum(1) - waveforms
+
+# ###################################################################################################################
+#             # Assuming the mixture tensor is already calculated
+#             # mixture shape: [batch_size, channels, feature_width]
+
+#             # Directory to save the audio files
+#             output_dir = "output_audio"
+#             os.makedirs(output_dir, exist_ok=True)
+
+#             # Iterate through the batch and save each waveform
+#             for i in range(mixture.size(0)):
+#                 # Extract the waveform for the current sample
+#                 waveform = mixture[i].squeeze(0)  # Remove the channel dimension if it is 1
+#                 targ = waveforms[i].squeeze(0)
+
+#                 # Save the waveform as a .wav file
+#                 output_path = os.path.join(output_dir, f"mixture_{i}.wav")
+#                 torchaudio.save(output_path, waveform.unsqueeze(0).cpu(), sample_rate=22050)
+
+#                 targ_path = os.path.join(output_dir, f"target_{i}.wav")
+#                 torchaudio.save(targ_path, targ.unsqueeze(0).cpu(), sample_rate=22050)
+
+#                 print(f"Saved mixture_{i}.wav to {output_dir}")
+# ###############################################################################################################
+
+
+
+            # Desired output sizes for each layer
+            target_sizes = [262144, 16384, 4096, 1024, 256, 128, 64, 32, 32, 64, 128, 256, 1024, 4096, 16384]  # TODO: this needs to be caclulated automaticaly somehow
+
+            # Create downscaled versions of waveforms using interpolation
+            mixture_features_channels_list = []
+            for size in target_sizes:
+                if feature_width == size:
+                    # No need to resize if the current size matches the target
+                    mixture_features_channels_list.append(mixture)
+                else:
+                    # Resize waveform to the target size
+                    resized_mixture = F.interpolate(mixture, size=(size,), mode='linear', align_corners=False)
+                    mixture_features_channels_list.append(resized_mixture)
+                    # feature_width = size  # Update current length for the next iteration
+
+
+            # Adjust channel dimensions to match `context_channels`
+            # This involves expanding the channel dimension after downsampling
+            mixture_features_channels_list = [
+                torch.cat([mixture_features_channels_list[i]] * num, dim=1) if num != mixture_features_channels_list[i].shape[1]
+                else mixture_features_channels_list[i]
+                for i, num in enumerate(self.mixture_features_channels)
+            ]
+
+            # embedding = torch.randn(2, 4, 32).to(self.device)
+            channels_list = None
+            embedding = None
 
         elif isinstance(batch, (list, tuple)) and self.class_cond and self.separation:
             waveforms, class_indexes, stems  = batch
@@ -217,6 +284,49 @@ class Audio_DM_Model(pl.LightningModule):
             embedding = None
             mixture_features_channels_list = None
 
+
+        elif isinstance(batch, (list, tuple)) and self.class_cond and not self.separation:
+            waveforms, class_indexes, stems  = batch
+
+            batch_size, channels, feature_width = waveforms.shape
+            
+            if current_class_indexes is not None:
+                # Get the active index from the one-hot vector
+                active_index = current_class_indexes.argmax(dim=1)
+                # Create a mask to exclude the active index
+                mask = torch.arange(stems.size(1), device=stems.device).unsqueeze(0) != active_index.unsqueeze(1)
+                # Sum all stems except the one at `active_index`
+                mixture = (stems * mask.unsqueeze(-1).unsqueeze(-1)).sum(1)
+            else:
+                mixture = stems.sum(1) - waveforms
+
+            # Desired output sizes for each layer
+            target_sizes = [262144, 4096, 1024, 256, 128, 64, 32]  # TODO: this needs to be caclulated automaticaly somehow
+
+            # Create downscaled versions of waveforms using interpolation
+            channels_list = []
+            for size in target_sizes:
+                if feature_width == size:
+                    # No need to resize if the current size matches the target
+                    channels_list.append(mixture)
+                else:
+                    # Resize waveform to the target size
+                    resized_mixture = F.interpolate(mixture, size=(size,), mode='linear', align_corners=False)
+                    channels_list.append(resized_mixture)
+                    # feature_width = size  # Update current length for the next iteration
+
+
+            # Adjust channel dimensions to match `context_channels`
+            # This involves expanding the channel dimension after downsampling
+            channels_list = [
+                torch.cat([channels_list[i]] * num, dim=1) if num != channels_list[i].shape[1]
+                else channels_list[i]
+                for i, num in enumerate([1, 512, 1024, 1024, 1024, 1024, 1024])
+            ]
+
+            # embedding = torch.randn(2, 4, 32).to(self.device)
+            embedding = None
+            mixture_features_channels_list = None
             
         elif isinstance(batch, (list, tuple)) and self.class_cond:
             waveforms, class_indexes, _ = batch
@@ -1129,3 +1239,145 @@ class ClassCondSeparateTrackSampleLogger_simple(ClassCondSeparateTrackSampleLogg
         mixture_audios = batch[2].sum(1)[:, 0, :].detach().cpu().numpy()[..., np.newaxis] #channels_list[0][idx, 0, :].detach().cpu().numpy()[..., np.newaxis]
         
         return  original_samples, generated_samples, mixture_audios
+    
+    
+    
+    
+
+
+
+############################### GENERATION ###############################################################
+
+class ClassCond_GEN_TrackSampleLogger(ClassCondSeparateTrackSampleLogger):
+    def __init__(
+        self,
+        num_items: int,
+        channels: int,
+        sampling_rate: int,
+        length: int,
+        sampling_steps: List[int],
+        diffusion_schedule: Schedule,
+        diffusion_sampler: Sampler,
+        stems = ['bass', 'drums', 'guitar', 'piano']
+    ) -> None:      
+        
+        super().__init__(
+            num_items=num_items,
+            channels=channels,
+            sampling_rate=sampling_rate,
+            length=length,
+            sampling_steps=sampling_steps,
+            diffusion_schedule=diffusion_schedule,
+            diffusion_sampler=diffusion_sampler,
+            stems = stems,
+        )
+
+    def generate_sample(self, trainer, pl_module, batch):
+        
+        model = pl_module.model
+        
+        # Extract mixture and original audio from the batch
+        waveforms, class_indexes, channels_list, embedding, mixture_features_channels_list = pl_module.get_input(batch)
+
+        # Get start diffusion noise for whole batch
+        noise = torch.randn(
+            (waveforms.size(0), self.channels, self.length), device=pl_module.device
+        )
+
+        # Dictionary to store generated samples
+        generated_samples = {stem: [] for stem in self.stems}
+        
+        
+        # Iterate over each diffusion step size
+        # for steps in self.sampling_steps:
+        steps = self.sampling_steps
+        # Iterate over each one-hot encoded feature vector (each stem)
+        for i, stem in enumerate(self.stems):
+            # Create a feature tensor for the current stem for all items
+            current_features = torch.zeros(waveforms.size(0), len(self.stems)).to(pl_module.device)
+            current_features[:, i] = 1  # Set the current stem feature to 1 (one-hot)
+
+            waveforms, class_indexes, channels_list, embedding, mixture_features_channels_list = pl_module.get_input(batch, current_features)
+
+            # Sample from the model using the noise and the current one-hot features
+            samples = model.sample(
+                noise=noise,
+                features=current_features,
+                sampler=self.diffusion_sampler,
+                sigma_schedule=self.diffusion_schedule,
+                num_steps=steps,
+                channels_list=channels_list,
+                mixture_features_channels_list=mixture_features_channels_list,
+            )
+            samples = rearrange(samples, "b c t -> b t c").detach().cpu().numpy()
+
+            # Store the generated samples
+            for idx in range(waveforms.size(0)):
+                # if steps not in generated_samples[stem]:
+                #     generated_samples[stem][steps] = []
+                generated_samples[stem].append(samples[idx])
+
+        # get original stems
+        original_samples = {stem: {} for stem in self.stems}
+        
+        original_stems = batch[2]
+        
+        for i, stem in enumerate(self.stems):
+            stem_data = original_stems[:, i]
+            stem_data =rearrange(stem_data, "b c t -> b t c") .detach().cpu().numpy()
+            original_samples[stem] = []
+            for idx in range(waveforms.size(0)):
+                original_samples[stem].append(stem_data[idx])  
+        
+        mixture_audios = batch[2].sum(1)[:, 0, :].detach().cpu().numpy()[..., np.newaxis] #channels_list[0][idx, 0, :].detach().cpu().numpy()[..., np.newaxis]
+        
+        return  original_samples, generated_samples, mixture_audios
+    
+    @torch.no_grad()
+    def log_audio(self, original_samples, generated_samples, mixture_audio, wandb_logger, trainer):
+        
+        # Log the first item of the batch
+        for idx in range(self.num_items):
+            # Prepare the logging data
+            logging_data = {}
+
+            # Prepare the original mixture log
+            logging_data[f"Mixture_audio"] = wandb.Audio(
+                mixture_audio[idx], 
+                caption=f"Mixture Audio {idx}", 
+                sample_rate=self.sampling_rate
+            )
+
+            # Prepare the original stems logs
+            for stem in self.stems:
+                original_audio = original_samples[stem][idx]
+                logging_data[f"original_{stem}"] = wandb.Audio(
+                    original_audio,
+                    caption=f"Original {stem} Audio {idx}",
+                    sample_rate=self.sampling_rate
+                )
+
+            # Prepare each generated sample for the current stem by number of steps
+            # for steps in self.sampling_steps:
+            for stem in self.stems:
+                generated_audio = generated_samples[stem][idx]
+                logging_data[f"generated_{stem}"] = wandb.Audio(
+                    generated_audio,
+                    caption=f"{stem} Sampled in {self.sampling_steps} steps (idx: {idx})",
+                    sample_rate=self.sampling_rate
+                )
+
+            # Prepare the mixes with new bass, drums, guitar, and piano
+            for stem in self.stems:
+                mix_audio_with_new_stem = sum(
+                    generated_samples[stem][idx] if current_stem == stem else original_samples[current_stem][idx]
+                    for current_stem in self.stems
+                )
+                logging_data[f"generated_mix_with_new_{stem}"] = wandb.Audio(
+                    mix_audio_with_new_stem,
+                    caption=f"Mix with New {stem.capitalize()} (idx: {idx})",
+                    sample_rate=self.sampling_rate
+                )
+
+            # Log all accumulated data
+            wandb_logger.log(logging_data) #step = trainer.global_step+idx)
