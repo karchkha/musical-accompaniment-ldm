@@ -1271,6 +1271,24 @@ class ClassCond_GEN_TrackSampleLogger(ClassCondSeparateTrackSampleLogger):
             diffusion_sampler=diffusion_sampler,
             stems = stems,
         )
+        
+    def log_sample(self, trainer, pl_module, batch, batch_idx):
+        
+        is_train = pl_module.training
+        if is_train:
+            pl_module.eval()
+
+        wandb_logger = get_wandb_logger(trainer).experiment
+        original_samples, generated_samples, mixture_audios = self.generate_sample(trainer, pl_module, batch)
+        
+        if  batch_idx ==0 and trainer.is_global_zero:
+            self.log_audio(original_samples, generated_samples, mixture_audios, wandb_logger, trainer)
+        
+        # save audios for FAD calculation later:
+        self.save_sample(original_samples, generated_samples, trainer, pl_module, batch_idx)       
+        
+        if is_train:
+            pl_module.train()
 
     def generate_sample(self, trainer, pl_module, batch):
         
@@ -1381,3 +1399,81 @@ class ClassCond_GEN_TrackSampleLogger(ClassCondSeparateTrackSampleLogger):
 
             # Log all accumulated data
             wandb_logger.log(logging_data) #step = trainer.global_step+idx)
+
+    def save_sample(self, original_samples, generated_samples, trainer, pl_module, batch_idx):
+        current_epoch = trainer.current_epoch
+        
+        new_sampling_rate = 16000 # because FAD is calculated of 16000
+        
+        # Create base directory path
+        base_dir = os.path.dirname(pl_module._trainer.checkpoint_callback.dirpath)
+        resampler = torchaudio.transforms.Resample(self.sampling_rate, new_sampling_rate)
+        
+        # Get GPU identifier
+        gpu_id = torch.cuda.current_device() if torch.cuda.is_available() else "cpu"
+        
+        for stem_idx, stem in enumerate(self.stems):
+            step_dir = os.path.join(base_dir, f'epoch_{current_epoch}_{stem}')
+            generated_dir = os.path.join(step_dir, 'generated')
+            original_dir = os.path.join(step_dir, 'original')
+
+            # Create directories if they don't exist
+            os.makedirs(generated_dir, exist_ok=True)
+            os.makedirs(original_dir, exist_ok=True)
+            
+            for idx in range(len(original_samples[stem])):
+                audio = generated_samples[stem][idx]  
+                original_audio = original_samples[stem][idx]  
+
+                # Resample audio
+                resampled_audio = resampler(torch.tensor(audio).permute(1,0))
+                resampled_original_audio = resampler(torch.tensor(original_audio).permute(1,0))
+
+                # Define file names with GPU identifier
+                generated_file_name = os.path.join(generated_dir, f'{stem}_epoch_{current_epoch}_batch_{batch_idx}_sample_{idx}_gpu_{gpu_id}.wav')
+                original_file_name = os.path.join(original_dir, f'{stem}_epoch_{current_epoch}_batch_{batch_idx}_sample_{idx}_gpu_{gpu_id}.wav')
+                # Save audio files
+                torchaudio.save(generated_file_name, resampled_audio, 16000)
+                torchaudio.save(original_file_name, resampled_original_audio, 16000)
+
+    @rank_zero_only
+    def on_validation_epoch_end(self, trainer, pl_module):
+        current_epoch = trainer.current_epoch
+        base_dir = os.path.dirname(trainer.checkpoint_callback.dirpath)
+        wandb_logger = get_wandb_logger(trainer).experiment
+        evaluator = EvaluationHelper(sampling_rate=16000, device=pl_module.device)
+
+        sampling_steps = self.sampling_steps if isinstance(self.sampling_steps, list) else [self.sampling_steps]
+
+        # Dictionary to accumulate metrics for averaging
+        aggregated_metrics = {}
+
+        for stem in self.stems:
+            stem_dir = os.path.join(base_dir, f'epoch_{current_epoch}_{stem}')
+            if os.path.exists(stem_dir):
+                dir1, dir2 = Path(os.path.join(stem_dir, "generated")), Path(os.path.join(stem_dir, "original"))
+                print("\nNow evaluating:", stem_dir)
+                metrics = evaluator.main(str(dir1), str(dir2))
+                metrics_buffer = {f"{stem}/{k}": float(v) for k, v in metrics.items()}
+
+                if metrics_buffer:
+                    # Accumulate metrics for averaging
+                    for k, v in metrics_buffer.items():
+                        base_metric_name = k.split('/')[1]  # Extract metric name without stem prefix
+                        aggregated_metrics.setdefault(base_metric_name, []).append(v)
+
+                        # Log individual metrics
+                        wandb_logger.log({k: v, "epoch": current_epoch}, commit=False)
+                        print(k, v)
+
+                    wandb_logger.log({"epoch": current_epoch}, commit=True)
+                shutil.rmtree(stem_dir)
+
+        # Calculate and log averages
+        avg_metrics = {f"average/{k}": sum(values) / len(values) for k, values in aggregated_metrics.items()}
+        for k, v in avg_metrics.items():
+            wandb_logger.log({k: v, "epoch": current_epoch}, commit=False)
+            print(f"Averaged {k}: {v}")
+
+        # Finalize logging for the epoch
+        wandb_logger.log({"epoch": current_epoch}, commit=True)
