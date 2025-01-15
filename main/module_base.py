@@ -1477,3 +1477,103 @@ class ClassCond_GEN_TrackSampleLogger(ClassCondSeparateTrackSampleLogger):
 
         # Finalize logging for the epoch
         wandb_logger.log({"epoch": current_epoch}, commit=True)
+        
+class ClassCond_Inpaint_TrackSampleLogger(ClassCond_GEN_TrackSampleLogger):
+    def __init__(
+        self,
+        num_items: int,
+        channels: int,
+        sampling_rate: int,
+        length: int,
+        sampling_steps: List[int],
+        diffusion_schedule: Schedule,
+        diffusion_sampler: Sampler,
+        stems: List[str], #['bass', 'drums', 'guitar', 'piano'],
+        percentage: float,
+        
+    ) -> None:
+        # Initialize the base class
+        super().__init__(
+            num_items=num_items,
+            channels=channels,
+            sampling_rate=sampling_rate,
+            length=length,
+            sampling_steps=sampling_steps,
+            diffusion_schedule=diffusion_schedule,
+            diffusion_sampler=diffusion_sampler,
+            stems=stems,
+        )
+
+        # Add custom logic for the subclass
+        self.percentage = percentage
+   
+    def sequential_mask(self, like, start):
+        length, device = like.shape[2], like.device
+        mask = torch.ones_like(like, dtype=torch.bool)
+        mask[:, :, start:] = torch.zeros((length - start,), device=device)
+        return mask
+    
+    def generate_sample(self, trainer, pl_module, batch):
+        model = pl_module.model
+
+        # Extract mixture and original audio from the batch
+        waveforms, class_indexes, channels_list, embedding, mixture_features_channels_list = pl_module.get_input(batch)
+
+        # Get start diffusion noise for the whole batch
+        noise = torch.randn(
+            (waveforms.size(0), self.channels, self.length), device=pl_module.device
+        )
+
+        # Dictionary to store generated samples
+        generated_samples = {stem: [] for stem in self.stems}
+
+        # Use the same sampling steps
+        steps = self.sampling_steps
+
+        # Iterate over each one-hot encoded feature vector (each stem)
+        for i, stem in enumerate(self.stems):
+            # Create a feature tensor for the current stem for all items
+            current_features = torch.zeros(waveforms.size(0), len(self.stems)).to(pl_module.device)
+            current_features[:, i] = 1  # Set the current stem feature to 1 (one-hot)
+
+            waveforms, class_indexes, channels_list, embedding, mixture_features_channels_list = pl_module.get_input(batch, current_features)
+
+            # Inpaint start into noise
+            inpaint = batch[2][:,i,:,:].clone() # taking coresponting stem form batch for inpaininig
+            length = int(noise.shape[2] * ((100.00 - self.percentage) / 100.0)) #noise.shape[2]  // 2 #
+            inpaint[:, :, length:] = noise[:, :, length:]
+            
+            inpaint_mask = self.sequential_mask(like=noise, start=length)
+
+            # Inpaint from the model using the noise and the current one-hot features
+            samples = model.inpaint(
+                inpaint=inpaint,
+                inpaint_mask = inpaint_mask, 
+                features=current_features,
+                sampler=self.diffusion_sampler,
+                sigma_schedule=self.diffusion_schedule,
+                num_steps=steps,
+                channels_list=channels_list,
+                mixture_features_channels_list=mixture_features_channels_list,
+            )
+            samples = rearrange(samples, "b c t -> b t c").detach().cpu().numpy()
+
+            # Store the generated samples
+            for idx in range(waveforms.size(0)):
+                generated_samples[stem].append(samples[idx])
+
+        # Get original stems
+        original_samples = {stem: {} for stem in self.stems}
+
+        original_stems = batch[2]
+
+        for i, stem in enumerate(self.stems):
+            stem_data = original_stems[:, i]
+            stem_data = rearrange(stem_data, "b c t -> b t c").detach().cpu().numpy()
+            original_samples[stem] = []
+            for idx in range(waveforms.size(0)):
+                original_samples[stem].append(stem_data[idx])
+
+        mixture_audios = batch[2].sum(1)[:, 0, :].detach().cpu().numpy()[..., np.newaxis]
+
+        return original_samples, generated_samples, mixture_audios

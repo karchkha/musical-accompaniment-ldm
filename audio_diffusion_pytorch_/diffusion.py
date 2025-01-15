@@ -9,6 +9,7 @@ from torch import Tensor
 import tqdm
 
 from .utils import default, exists
+import torchaudio.transforms as T
 
 """ Distributions """
 
@@ -173,9 +174,10 @@ class AEulerSampler(Sampler):
 class ADPM2Sampler(Sampler):
     """https://www.desmos.com/calculator/jbxjlqd9mb"""
 
-    def __init__(self, rho: float = 1.0):
+    def __init__(self, rho: float = 1.0, num_resamples = None):
         super().__init__()
         self.rho = rho
+        self.num_resamples = num_resamples
 
     def get_sigmas(self, sigma: float, sigma_next: float) -> Tuple[float, float, float]:
         r = self.rho
@@ -215,19 +217,19 @@ class ADPM2Sampler(Sampler):
         fn: Callable,
         sigmas: Tensor,
         num_steps: int,
-        num_resamples: int,
+        # num_resamples: int,
     ) -> Tensor:
         x = sigmas[0] * torch.randn_like(source)
 
         for i in range(num_steps - 1):
             # Noise source to current noise level
             source_noisy = source + sigmas[i] * torch.randn_like(source)
-            for r in range(num_resamples):
+            for r in range(self.num_resamples):
                 # Merge noisy source and current then denoise
                 x = source_noisy * mask + x * ~mask
                 x = self.step(x, fn=fn, sigma=sigmas[i], sigma_next=sigmas[i + 1])  # type: ignore # noqa
                 # Renoise if not last resample step
-                if r < num_resamples - 1:
+                if r < self.num_resamples - 1:
                     sigma = sqrt(sigmas[i] ** 2 - sigmas[i + 1] ** 2)
                     x = x + sigma * torch.randn_like(x)
 
@@ -300,9 +302,66 @@ class MSDMSampler(Sampler):
                         )
         return x
 
+    def inpaint(
+        self,
+        source: Tensor,
+        mask: Tensor,
+        fn: Callable,
+        sigmas: Tensor,
+        num_steps: int,
+    ) -> Tensor:
+        x = self.generate_track(fn,
+                        sigmas=sigmas,
+                        noises=torch.randn_like(source),
+                        source = source,
+                        mask = mask.to(dtype=torch.float32),
+                        )
+
+        return x
 
 
+""" loss function Classes """
 
+class PerceptualLoss(nn.Module):
+    def __init__(self, sample_rate: int = 22050, n_mels: int = 128):
+        """
+        Perceptual loss based on Mel spectrogram features.
+
+        Args:
+            sample_rate (int): Sample rate of the audio.
+            n_mels (int): Number of Mel bands for the spectrogram.
+        """
+        super().__init__()
+        self.mel_transform = T.MelSpectrogram(
+            sample_rate=sample_rate,
+            n_fft=2048,
+            hop_length=512,
+            n_mels=n_mels,
+            f_min=0,
+            f_max=sample_rate // 2,
+            power=2.0
+        )
+
+    def forward(self, x: Tensor, x_denoised: Tensor) -> Tensor:
+        """
+        Compute perceptual loss between input and denoised audio.
+
+        Args:
+            x (Tensor): Original input tensor (batch, channels, samples).
+            x_denoised (Tensor): Denoised output tensor (batch, channels, samples).
+
+        Returns:
+            Tensor: Perceptual loss for each sample in the batch.
+        """
+        # Compute Mel spectrograms
+        x_mel = self.mel_transform(x.squeeze(1))  # Remove channel dimension
+        x_denoised_mel = self.mel_transform(x_denoised.squeeze(1))
+
+        # Compute MSE loss between Mel spectrograms
+        perceptual_loss = F.mse_loss(x_mel, x_denoised_mel, reduction="none")
+        perceptual_loss = perceptual_loss.mean(dim=(-2, -1))  # Average across frequency and time
+
+        return perceptual_loss
 
 
 """ Diffusion Classes """
@@ -323,6 +382,7 @@ class Diffusion(nn.Module):
         sigma_distribution: Distribution,
         sigma_data: float,  # data distribution standard deviation
         dynamic_threshold: float = 0.0,
+        lambda_perceptual: float = 0.0  # Add lambda_perceptual as a parameter
     ):
         super().__init__()
 
@@ -330,6 +390,12 @@ class Diffusion(nn.Module):
         self.sigma_data = sigma_data
         self.sigma_distribution = sigma_distribution
         self.dynamic_threshold = dynamic_threshold
+        self.lambda_perceptual = lambda_perceptual  
+
+        # Initialize PerceptualLoss if lambda_perceptual > 0
+        self.perceptual_loss_fn = (
+            PerceptualLoss() if lambda_perceptual > 0 else None
+        )
 
     def get_scale_weights(self, sigmas: Tensor) -> Tuple[Tensor, ...]:
         sigma_data = self.sigma_data
@@ -400,9 +466,15 @@ class Diffusion(nn.Module):
         losses = F.mse_loss(x_denoised, x, reduction="none")
         losses = reduce(losses, "b ... -> b", "mean")
         losses = losses * self.loss_weight(sigmas)
-        loss = losses.mean()
+        # loss = losses.mean()
+        
+        # Optionally add perceptual loss
+        if self.perceptual_loss_fn is not None:
+            perceptual_loss = self.perceptual_loss_fn(x, x_denoised)
+            losses += self.lambda_perceptual * perceptual_loss
 
-        return loss
+        # Final combined loss
+        return losses.mean()
 
 
 class DiffusionSampler(nn.Module):
@@ -443,26 +515,26 @@ class DiffusionInpainter(nn.Module):
         diffusion: Diffusion,
         *,
         num_steps: int,
-        num_resamples: int,
+        # num_resamples: int,
         sampler: Sampler,
         sigma_schedule: Schedule,
     ):
         super().__init__()
         self.denoise_fn = diffusion.denoise_fn
         self.num_steps = num_steps
-        self.num_resamples = num_resamples
+        # self.num_resamples = num_resamples
         self.inpaint_fn = sampler.inpaint
         self.sigma_schedule = sigma_schedule
 
     @torch.no_grad()
-    def forward(self, inpaint: Tensor, inpaint_mask: Tensor) -> Tensor:
+    def forward(self, inpaint: Tensor, inpaint_mask: Tensor, **kwargs) -> Tensor:
         x = self.inpaint_fn(
             source=inpaint,
             mask=inpaint_mask,
-            fn=self.denoise_fn,
+            fn=lambda *a, **ka: self.denoise_fn(*a, **{**ka, **kwargs}),
             sigmas=self.sigma_schedule(self.num_steps, inpaint.device),
             num_steps=self.num_steps,
-            num_resamples=self.num_resamples,
+            # num_resamples=self.num_resamples,
         )
         return x
 

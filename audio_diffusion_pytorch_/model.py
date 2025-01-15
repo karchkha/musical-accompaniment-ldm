@@ -8,6 +8,7 @@ from .diffusion import (
     ADPM2Sampler,
     Diffusion,
     DiffusionSampler,
+    DiffusionInpainter,
     Distribution,
     KarrasSchedule,
     LogNormalDistribution,
@@ -28,6 +29,7 @@ class Model1d(nn.Module):
         diffusion_sigma_distribution: Distribution,
         diffusion_sigma_data: int,
         diffusion_dynamic_threshold: float,
+        lambda_perceptual: float = 0.0,
         use_classifier_free_guidance: bool = False,
         **kwargs
     ):
@@ -42,6 +44,7 @@ class Model1d(nn.Module):
             sigma_distribution=diffusion_sigma_distribution,
             sigma_data=diffusion_sigma_data,
             dynamic_threshold=diffusion_dynamic_threshold,
+            lambda_perceptual=lambda_perceptual,
         )
 
     def forward(self, x: Tensor, **kwargs) -> Tensor:
@@ -63,6 +66,23 @@ class Model1d(nn.Module):
         )
         return diffusion_sampler(noise, **kwargs)
 
+    def inpaint(
+        self,
+        inpaint: Tensor,
+        inpaint_mask: Tensor,
+        num_steps: int,
+        sigma_schedule: Schedule,
+        sampler: Sampler,
+        # num_resamples: int,
+        **kwargs
+    ) -> Tensor:       
+        diffusion_sampler = DiffusionInpainter(
+            diffusion=self.diffusion,
+            sampler=sampler,
+            sigma_schedule=sigma_schedule,
+            num_steps=num_steps,
+        )        
+        return diffusion_sampler(inpaint, inpaint_mask, **kwargs)
 
 class DiffusionUpsampler1d(Model1d):
     def __init__(
@@ -238,6 +258,9 @@ class AudioDiffusionModel(Model1d):
     def sample(self, *args, **kwargs):
         return super().sample(*args, **{**get_default_sampling_kwargs(), **kwargs})
 
+    def inpaint(self, *args, **kwargs):
+        # You can provide default arguments for inpainting similarly to sampling
+        return super().inpaint(*args, **{**get_default_sampling_kwargs(), **kwargs})
 
 class AudioDiffusionUpsampler(DiffusionUpsampler1d):
     def __init__(self, in_channels: int, **kwargs):
