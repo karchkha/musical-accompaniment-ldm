@@ -8,7 +8,7 @@ from abc import ABC
 from pathlib import Path
 from typing import *
 
-# import av
+import av
 import librosa
 import numpy as np
 import torch
@@ -23,13 +23,13 @@ def get_duration_sec(file, cache=False):
             duration = float(f.readline().strip("\n"))
         return duration
     except:
-        pass
-        # container = av.open(file)
-        # audio = container.streams.get(audio=0)[0]
-        # duration = audio.duration * float(audio.time_base)
-        # if cache:
-        #     with open(file + ".dur", "w") as f:
-        #         f.write(str(duration) + "\n")
+        # pass
+        container = av.open(file)
+        audio = container.streams.get(audio=0)[0]
+        duration = audio.duration * float(audio.time_base)
+        if cache:
+            with open(file + ".dur", "w") as f:
+                f.write(str(duration) + "\n")
         return duration
 
 
