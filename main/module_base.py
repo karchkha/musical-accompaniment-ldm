@@ -4,7 +4,7 @@ import numpy as np
 import pytorch_lightning as pl
 import torch
 import wandb
-from audio_diffusion_pytorch_ import AudioDiffusionModel, AudioDiffusionConditional, Sampler, Schedule
+from audio_diffusion_pytorch_ import AudioDiffusionModel, AudioDiffusionConditional, Sampler, Schedule, AudioDiffusionModel_2d
 from einops import rearrange
 from pytorch_lightning import Callback, Trainer
 from pytorch_lightning.loggers import WandbLogger #LoggerCollection, WandbLogger
@@ -20,6 +20,7 @@ from pathlib import Path
 import json
 import math
 from main.model_simple import Audio_DM_Model_simple
+from music2latent import EncoderDecoder
 
 """ Model """
 
@@ -359,6 +360,242 @@ class Audio_DM_Model(pl.LightningModule):
         self.log("valid_loss", loss, sync_dist=True)
         return loss
 
+
+class CAEWrapper(torch.nn.Module):
+    def __init__(self, device="cuda:0"):
+        super(CAEWrapper, self).__init__()
+        self.encoder_decoder = EncoderDecoder(device=device)
+        self.device = torch.device(device)  # Store the device for future use
+
+    def to(self, device):
+        """
+        Move the CAE to a specified device.
+        """
+        self.device = device  # Update the stored device
+        self.encoder_decoder.device = device  # Ensure EncoderDecoder is aware of the device
+        return self
+
+    # def encode(self, x):
+    #     return self.encoder_decoder.encode(x).clone().detach()
+
+    # def decode(self, latent):
+    #     return self.encoder_decoder.decode(latent).clone().detach()
+
+    def encode(self, x):
+        # Ensure tensor is on the correct device
+        x = x.to(self.device).clone().detach()
+        # Convert to numpy, encode, and move back to tensor
+        encoded = torch.from_numpy(
+            self.encoder_decoder.encode(x).cpu().numpy()
+        ).to(self.device)
+        # Clear unnecessary references
+        del x
+        torch.cuda.empty_cache()
+        return encoded
+
+    def decode(self, latent):
+        # Ensure latent is on the correct device
+        latent = latent.to(self.device).clone().detach()
+        # Convert to numpy, decode, and move back to tensor
+        decoded = torch.from_numpy(
+            self.encoder_decoder.decode(latent).cpu().numpy()
+        ).to(self.device)
+        # Clear unnecessary references
+        del latent
+        torch.cuda.empty_cache()
+        return decoded
+
+
+class Audio_LDM_Model(pl.LightningModule):
+    def __init__(
+        self, learning_rate: float, beta1: float, beta2: float, class_cond: bool, concat: bool = False, *args, **kwargs
+    ):
+        super().__init__()
+        self.save_hyperparameters()
+        self.learning_rate = learning_rate
+        self.beta1 = beta1
+        self.beta2 = beta2
+
+        self.class_cond = class_cond
+        self.concat = concat
+        self.mixture_features_channels = kwargs.pop('mixture_features_channels', None)
+        
+        self.CAE = CAEWrapper(device="cpu") # EncoderDecoder() #device="cpu")
+        
+        self.model = AudioDiffusionModel_2d(*args, **kwargs)
+
+    def to(self, device):
+        """
+        Override to method to move all submodules to the specified device.
+        """
+        super(Audio_LDM_Model, self).to(device)
+        self.CAE.to(device)  # Ensure CAE is moved
+        return self
+
+    # @property
+    # def device(self):
+    #     return next(self.model.parameters()).device
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.Adam(
+            list(self.parameters()),
+            lr=self.learning_rate,
+            betas=(self.beta1, self.beta2),
+        )
+        return optimizer
+
+    @torch.no_grad()
+    def get_input(self, batch, current_class_indexes = None):
+        
+        # if isinstance(batch, (list, tuple)) and self.class_cond and self.separation:
+        #     waveforms, class_indexes, stems  = batch
+
+        #     batch_size, channels, feature_width = waveforms.shape
+        #     mixture = stems.sum(1)
+
+        #     # Desired output sizes for each layer
+        #     target_sizes = [262144, 4096, 1024, 256, 128, 64, 32]  # TODO: this needs to be caclulated automaticaly somehow
+
+        #     # Create downscaled versions of waveforms using interpolation
+        #     channels_list = []
+        #     for size in target_sizes:
+        #         if feature_width == size:
+        #             # No need to resize if the current size matches the target
+        #             channels_list.append(mixture)
+        #         else:
+        #             # Resize waveform to the target size
+        #             resized_mixture = F.interpolate(mixture, size=(size,), mode='linear', align_corners=False)
+        #             channels_list.append(resized_mixture)
+        #             # feature_width = size  # Update current length for the next iteration
+
+
+        #     # Adjust channel dimensions to match `context_channels`
+        #     # This involves expanding the channel dimension after downsampling
+        #     channels_list = [
+        #         torch.cat([channels_list[i]] * num, dim=1) if num != channels_list[i].shape[1]
+        #         else channels_list[i]
+        #         for i, num in enumerate([1, 512, 1024, 1024, 1024, 1024, 1024])
+        #     ]
+
+        #     # embedding = torch.randn(2, 4, 32).to(self.device)
+        #     embedding = None
+        #     mixture_features_channels_list = None
+
+
+        if isinstance(batch, (list, tuple)) and self.class_cond and not self.concat and self.mixture_features_channels:
+            waveforms, class_indexes, stems  = batch
+
+            batch_size, channels, feature_width = waveforms.shape
+            
+            if current_class_indexes is not None:
+                # Get the active index from the one-hot vector
+                active_index = current_class_indexes.argmax(dim=1)
+                # Create a mask to exclude the active index
+                mask = torch.arange(stems.size(1), device=stems.device).unsqueeze(0) != active_index.unsqueeze(1)
+                # Sum all stems except the one at `active_index`
+                mixture = (stems * mask.unsqueeze(-1).unsqueeze(-1)).sum(1)
+            else:
+                mixture = stems.sum(1) - waveforms
+
+            # Desired output sizes for each layer
+            target_sizes = [262144, 4096, 1024, 256, 128, 64, 32]  # TODO: this needs to be caclulated automaticaly somehow
+
+            # Create downscaled versions of waveforms using interpolation
+            channels_list = []
+            for size in target_sizes:
+                if feature_width == size:
+                    # No need to resize if the current size matches the target
+                    channels_list.append(mixture)
+                else:
+                    # Resize waveform to the target size
+                    resized_mixture = F.interpolate(mixture, size=(size,), mode='linear', align_corners=False)
+                    channels_list.append(resized_mixture)
+                    # feature_width = size  # Update current length for the next iteration
+
+
+            # Adjust channel dimensions to match `context_channels`
+            # This involves expanding the channel dimension after downsampling
+            channels_list = [
+                torch.cat([channels_list[i]] * num, dim=1) if num != channels_list[i].shape[1]
+                else channels_list[i]
+                for i, num in enumerate([1, 512, 1024, 1024, 1024, 1024, 1024])
+            ]
+
+            # embedding = torch.randn(2, 4, 32).to(self.device)
+            embedding = None
+            mixture_features_channels_list = None
+
+        #### concat mix to the noise for conditioning ####
+        if isinstance(batch, (list, tuple)) and self.class_cond and self.concat:
+            waveforms, class_indexes, stems  = batch
+
+            batch_size, channels, feature_width = waveforms.shape
+            
+            if current_class_indexes is not None:
+                
+                class_indexes = current_class_indexes
+                
+                # Get the active index from the one-hot vector
+                active_index = current_class_indexes.argmax(dim=1)
+                # Create a mask to exclude the active index
+                mask = torch.arange(stems.size(1), device=stems.device).unsqueeze(0) != active_index.unsqueeze(1)
+                # Sum all stems except the one at `active_index`
+                mixture = (stems * mask.unsqueeze(-1).unsqueeze(-1)).sum(1)
+            else:
+                mixture = stems.sum(1) - waveforms
+
+            # embedding = torch.randn(2, 4, 32).to(self.device)
+            embedding = None
+            mixture_features_channels_list = None
+
+            latent = self.CAE.encode(waveforms.squeeze(1)).unsqueeze(1)      
+            mixture_latent = self.CAE.encode(mixture.squeeze(1)).unsqueeze(1)
+
+        elif isinstance(batch, (list, tuple)) and self.class_cond:
+            waveforms, class_indexes, _ = batch
+            
+            if current_class_indexes is not None:
+                class_indexes = current_class_indexes
+            mixture = None
+            embedding = None
+            mixture_features_channels_list = None
+
+            latent = self.CAE.encode(waveforms.squeeze(1)).unsqueeze(1)      
+            mixture_latent = None  
+
+        elif isinstance(batch, (list, tuple)) :
+            waveforms, _, _= batch
+            class_indexes = None
+            mixture = None  
+            embedding = None   
+            mixture_features_channels_list = None
+            
+            latent = self.CAE.encode(waveforms.squeeze(1)).unsqueeze(1)      
+            mixture_latent = None  
+ 
+        else:
+            waveforms = batch
+            class_indexes = None
+            mixture = None
+            embedding = None
+            mixture_features_channels_list = None
+            
+            latent = self.CAE.encode(waveforms.squeeze(1)).unsqueeze(1)      
+            mixture_latent = None 
+        
+        return latent, class_indexes, mixture_latent, embedding, mixture_features_channels_list
+
+    def training_step(self, batch, batch_idx):
+        latent, class_indexes, mixture_latent, embedding, mixture_features_channels_list = self.get_input(batch)
+        loss =self.model(latent, noise_labels_s=None, class_labels = class_indexes, augment_labels=embedding, mixture = mixture_latent) #, channels_list=channels_list, embedding = embedding, mixture_features_channels_list = mixture_features_channels_list)
+        self.log("train_loss", loss, sync_dist=True)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        latent, class_indexes, mixture_latent, embedding, mixture_features_channels_list = self.get_input(batch)
+        loss = self.model(latent, noise_labels_s=None, class_labels = class_indexes,  augment_labels=embedding, mixture = mixture_latent ) #, channels_list=channels_list, embedding = embedding, mixture_features_channels_list= mixture_features_channels_list)
+        self.log("valid_loss", loss, sync_dist=True)
+        return loss
 
 
 
@@ -1577,3 +1814,104 @@ class ClassCond_Inpaint_TrackSampleLogger(ClassCond_GEN_TrackSampleLogger):
         mixture_audios = batch[2].sum(1)[:, 0, :].detach().cpu().numpy()[..., np.newaxis]
 
         return original_samples, generated_samples, mixture_audios
+
+    
+################################### 2D Latent #####################################################################
+class ClassCond_GEN_2D_TrackSampleLogger(ClassCond_GEN_TrackSampleLogger):
+    def __init__(
+        self,
+        num_items: int,
+        channels: int,
+        img_resolution: int,
+        sampling_rate: int,
+        length: int,
+        sampling_steps: List[int],
+        diffusion_schedule: Schedule,
+        diffusion_sampler: Sampler,
+        stems = ['bass', 'drums', 'guitar', 'piano']
+    ) -> None:      
+        
+        super().__init__(
+            num_items=num_items,
+            channels=channels,
+            sampling_rate=sampling_rate,
+            length=length,
+            sampling_steps=sampling_steps,
+            diffusion_schedule=diffusion_schedule,
+            diffusion_sampler=diffusion_sampler,
+            stems = stems,
+        )
+        
+        self.img_resolution = img_resolution
+    
+    @torch.no_grad()  
+    def generate_sample(self, trainer, pl_module, batch):
+        
+        model = pl_module.model
+        
+        # Extract mixture and original audio from the batch
+        latent, class_indexes, channels_list, embedding, mixture_features_channels_list = pl_module.get_input(batch)
+
+        # Get start diffusion noise for whole batch
+        noise = torch.randn(
+            (latent.size(0), self.channels, self.img_resolution, self.img_resolution), device=pl_module.device
+        )
+
+        # Dictionary to store generated samples
+        generated_samples = {stem: [] for stem in self.stems}
+        
+        
+        # Iterate over each diffusion step size
+        # for steps in self.sampling_steps:
+        steps = self.sampling_steps
+        # Iterate over each one-hot encoded feature vector (each stem)
+        for i, stem in enumerate(self.stems):
+            # Create a feature tensor for the current stem for all items
+            current_features = torch.zeros(latent.size(0), len(self.stems)).to(pl_module.device)
+            current_features[:, i] = 1  # Set the current stem feature to 1 (one-hot)
+
+            latent, class_indexes, mixture_latent, embedding, mixture_features_channels_list = pl_module.get_input(batch, current_features)
+
+            # Sample from the model using the noise and the current one-hot features
+            samples = model.sample(
+                noise=noise,
+                noise_labels_s=None,
+                # features=current_features,
+                sampler=self.diffusion_sampler,
+                sigma_schedule=self.diffusion_schedule,
+                num_steps=steps,
+                class_labels = class_indexes,
+                augment_labels=embedding,
+                mixture=mixture_latent
+                # channels_list=channels_list,
+                # mixture_features_channels_list=mixture_features_channels_list,
+            )
+            
+            samples_wav = pl_module.CAE.decode(samples.squeeze(1)).unsqueeze(1)
+            # samples_wav  = torch.randn(latent.size(0), 1, 264600).to(pl_module.device)
+            # samples_wav = F.pad(samples_wav, ((self.length - samples_wav.size(-1)) // 2, (self.length - samples_wav.size(-1) + 1) // 2), mode="constant", value=0)
+            samples_wav = F.pad(samples_wav, (0, self.length - samples_wav.size(-1)), mode="constant", value=0)
+
+            samples = rearrange(samples_wav, "b c t -> b t c").detach().cpu().numpy()
+
+            # Store the generated samples
+            for idx in range(latent.size(0)):
+                # if steps not in generated_samples[stem]:
+                #     generated_samples[stem][steps] = []
+                generated_samples[stem].append(samples[idx])
+
+        # get original stems
+        original_samples = {stem: {} for stem in self.stems}
+        
+        original_stems = batch[2]
+        
+        for i, stem in enumerate(self.stems):
+            stem_data = original_stems[:, i]
+            stem_data =rearrange(stem_data, "b c t -> b t c").detach().cpu().numpy()
+            original_samples[stem] = []
+            for idx in range(latent.size(0)):
+                original_samples[stem].append(stem_data[idx])  
+        
+        mixture_audios = batch[2].sum(1)[:, 0, :].detach().cpu().numpy()[..., np.newaxis] #channels_list[0][idx, 0, :].detach().cpu().numpy()[..., np.newaxis]
+        
+        return  original_samples, generated_samples, mixture_audios

@@ -23,9 +23,9 @@
 
 import numpy as np
 import torch
-from torch_utils import persistence
+from ctm.torch_utils import persistence
 from torch.nn.functional import silu
-from nn import append_dims
+from ctm.nn import append_dims
 from audio_diffusion_pytorch_.modules import UNet1d
 
 #----------------------------------------------------------------------------
@@ -406,7 +406,7 @@ class SongUNet(torch.nn.Module):
                     self.dec[f'{res}x{res}_aux_conv_train'] = Conv2d(in_channels=cout, out_channels=out_channels, kernel=3,
                                                                **init_zero)
 
-    def forward(self, x, noise_labels, noise_labels_s, class_labels):
+    def forward(self, x, noise_labels, noise_labels_s, class_labels, augment_labels=None, mixture=None):
         # Mapping.
         emb = self.map_noise(noise_labels)
         emb = emb.reshape(emb.shape[0], 2, -1).flip(1).reshape(*emb.shape) # swap sin/cos
@@ -415,7 +415,8 @@ class SongUNet(torch.nn.Module):
             if self.training and self.label_dropout:
                 tmp = tmp * (torch.rand([x.shape[0], 1], device=x.device) >= self.label_dropout).to(tmp.dtype)
             emb = emb + self.map_label(tmp * np.sqrt(self.map_label.in_features))
-
+        if self.map_augment is not None and augment_labels is not None:
+            emb = emb + self.map_augment(augment_labels)
         emb = silu(self.map_layer0(emb))
         emb = silu(self.map_layer1(emb))
         if noise_labels_s != None:
@@ -436,6 +437,7 @@ class SongUNet(torch.nn.Module):
 
         # Encoder.
         skips = []
+        x = x if mixture is None else torch.cat([x, mixture], dim=1) # concatinate mixture if it's present
         aux = x
         for name, block in self.enc.items():
             if 'aux_down' in name:

@@ -397,9 +397,9 @@ class Diffusion(nn.Module):
             PerceptualLoss() if lambda_perceptual > 0 else None
         )
 
-    def get_scale_weights(self, sigmas: Tensor) -> Tuple[Tensor, ...]:
+    def get_scale_weights(self, sigmas: Tensor, x: Tensor) -> Tuple[Tensor, ...]:
         sigma_data = self.sigma_data
-        sigmas_padded = rearrange(sigmas, "b -> b 1 1")
+        sigmas_padded = sigmas.view(sigmas.shape[0], *([1] * (x.ndim - 1)))
         c_skip = (sigma_data ** 2) / (sigmas_padded ** 2 + sigma_data ** 2)
         c_out = (
             sigmas_padded * sigma_data * (sigma_data ** 2 + sigmas_padded ** 2) ** -0.5
@@ -426,21 +426,23 @@ class Diffusion(nn.Module):
         assert exists(sigmas)
 
         # Predict network output and add skip connection
-        c_skip, c_out, c_in, c_noise = self.get_scale_weights(sigmas)
+        c_skip, c_out, c_in, c_noise = self.get_scale_weights(sigmas, x_noisy)
         x_pred = self.net(c_in * x_noisy, c_noise, **kwargs)
         x_denoised = c_skip * x_noisy + c_out * x_pred
 
         # Dynamic thresholding
         if self.dynamic_threshold == 0.0:
             return x_denoised.clamp(-1.0, 1.0)
+        elif self.dynamic_threshold == -1.0:
+            return x_denoised
         else:
             # Find dynamic threshold quantile for each batch
-            x_flat = rearrange(x_denoised, "b ... -> b (...)")
+            x_flat = x_denoised.view(x_denoised.shape[0], -1)
             scale = torch.quantile(x_flat.abs(), self.dynamic_threshold, dim=-1)
             # Clamp to a min of 1.0
             scale.clamp_(min=1.0)
             # Clamp all values and scale
-            scale = pad_dims(scale, ndim=x_denoised.ndim - scale.ndim)
+            scale = scale.view(*scale.shape, *([1] * (x_denoised.ndim - scale.ndim)))
             x_denoised = x_denoised.clamp(-scale, scale) / scale
             return x_denoised
 
@@ -453,7 +455,7 @@ class Diffusion(nn.Module):
 
         # Sample amount of noise to add for each batch element
         sigmas = self.sigma_distribution(num_samples=batch, device=device)
-        sigmas_padded = rearrange(sigmas, "b -> b 1 1")
+        sigmas_padded = sigmas.view(sigmas.shape[0], *([1] * (x.ndim - 1)))
 
         # Add noise to input
         noise = default(noise, lambda: torch.randn_like(x))
@@ -465,7 +467,8 @@ class Diffusion(nn.Module):
         # Compute weighted loss
         losses = F.mse_loss(x_denoised, x, reduction="none")
         losses = reduce(losses, "b ... -> b", "mean")
-        losses = losses * self.loss_weight(sigmas)
+        weigths = self.loss_weight(sigmas)
+        losses = losses * weigths
         # loss = losses.mean()
         
         # Optionally add perceptual loss
@@ -485,12 +488,14 @@ class DiffusionSampler(nn.Module):
         sampler: Sampler,
         sigma_schedule: Schedule,
         num_steps: Optional[int] = None,
+        clamp: bool = True,
     ):
         super().__init__()
         self.denoise_fn = diffusion.denoise_fn
         self.sampler = sampler
         self.sigma_schedule = sigma_schedule
         self.num_steps = num_steps
+        self.clamp = clamp
 
     @torch.no_grad()
     def forward(
@@ -505,7 +510,8 @@ class DiffusionSampler(nn.Module):
         fn = lambda *a, **ka: self.denoise_fn(*a, **{**ka, **kwargs})  # noqa
         # Sample using sampler
         x = self.sampler(noise, fn=fn, sigmas=sigmas, num_steps=num_steps)
-        x = x.clamp(-1.0, 1.0)
+        if self.clamp:
+            x = x.clamp(-1.0, 1.0)
         return x
 
 

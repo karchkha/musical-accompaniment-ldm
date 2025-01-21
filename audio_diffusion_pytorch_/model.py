@@ -17,6 +17,7 @@ from .diffusion import (
 )
 from .modules import MultiEncoder1d, UNet1d, UNetConditional1d
 from .utils import default, exists, to_list
+from ctm.networks import SongUNet
 
 """
 Diffusion Classes (generic for 1d data)
@@ -83,6 +84,69 @@ class Model1d(nn.Module):
             num_steps=num_steps,
         )        
         return diffusion_sampler(inpaint, inpaint_mask, **kwargs)
+
+
+class Model2d(nn.Module):
+    def __init__(
+        self,
+        diffusion_sigma_distribution: Distribution,
+        diffusion_sigma_data: int,
+        diffusion_dynamic_threshold: float,
+        lambda_perceptual: float = 0.0,
+        use_classifier_free_guidance: bool = False,
+        **kwargs
+    ):
+        super().__init__()
+
+        UNet = SongUNet
+
+        self.unet = UNet(**kwargs)
+
+        self.diffusion = Diffusion(
+            net=self.unet,
+            sigma_distribution=diffusion_sigma_distribution,
+            sigma_data=diffusion_sigma_data,
+            dynamic_threshold=diffusion_dynamic_threshold,
+        )
+
+    def forward(self, x: Tensor, **kwargs) -> Tensor:
+        return self.diffusion(x, **kwargs)
+
+    def sample(
+        self,
+        noise: Tensor,
+        num_steps: int,
+        sigma_schedule: Schedule,
+        sampler: Sampler,
+        **kwargs
+    ) -> Tensor:
+        diffusion_sampler = DiffusionSampler(
+            diffusion=self.diffusion,
+            sampler=sampler,
+            sigma_schedule=sigma_schedule,
+            num_steps=num_steps,
+            clamp=False,
+        )
+        return diffusion_sampler(noise, **kwargs)
+
+    def inpaint(
+        self,
+        inpaint: Tensor,
+        inpaint_mask: Tensor,
+        num_steps: int,
+        sigma_schedule: Schedule,
+        sampler: Sampler,
+        # num_resamples: int,
+        **kwargs
+    ) -> Tensor:       
+        diffusion_sampler = DiffusionInpainter(
+            diffusion=self.diffusion,
+            sampler=sampler,
+            sigma_schedule=sigma_schedule,
+            num_steps=num_steps,
+        )        
+        return diffusion_sampler(inpaint, inpaint_mask, **kwargs)
+
 
 class DiffusionUpsampler1d(Model1d):
     def __init__(
@@ -254,6 +318,18 @@ def get_default_sampling_kwargs():
 class AudioDiffusionModel(Model1d):
     def __init__(self, **kwargs):
         super().__init__(**{**get_default_model_kwargs(), **kwargs})
+
+    def sample(self, *args, **kwargs):
+        return super().sample(*args, **{**get_default_sampling_kwargs(), **kwargs})
+
+    def inpaint(self, *args, **kwargs):
+        # You can provide default arguments for inpainting similarly to sampling
+        return super().inpaint(*args, **{**get_default_sampling_kwargs(), **kwargs})
+
+
+class AudioDiffusionModel_2d(Model2d):
+    def __init__(self, **kwargs):
+        super().__init__(**{**kwargs})
 
     def sample(self, *args, **kwargs):
         return super().sample(*args, **{**get_default_sampling_kwargs(), **kwargs})
