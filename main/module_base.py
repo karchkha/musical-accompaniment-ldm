@@ -485,9 +485,12 @@ class Audio_LDM_Model(pl.LightningModule):
         if isinstance(batch, (list, tuple)) and self.class_cond and not self.concat and self.mixture_features_channels:
             waveforms, class_indexes, stems  = batch
 
-            batch_size, channels, feature_width = waveforms.shape
+            batch_size, channels, _ = waveforms.shape
             
             if current_class_indexes is not None:
+                
+                class_indexes = current_class_indexes
+                
                 # Get the active index from the one-hot vector
                 active_index = current_class_indexes.argmax(dim=1)
                 # Create a mask to exclude the active index
@@ -497,36 +500,36 @@ class Audio_LDM_Model(pl.LightningModule):
             else:
                 mixture = stems.sum(1) - waveforms
 
+            latent = self.CAE.encode(waveforms.squeeze(1)).unsqueeze(1)      
+            mixture_latent = self.CAE.encode(mixture.squeeze(1)).unsqueeze(1)
+
             # Desired output sizes for each layer
-            target_sizes = [262144, 4096, 1024, 256, 128, 64, 32]  # TODO: this needs to be caclulated automaticaly somehow
+            target_sizes = [64, 32, 16, 8, 8, 16, 32, 64]  # TODO: this needs to be caclulated automaticaly somehow
 
             # Create downscaled versions of waveforms using interpolation
-            channels_list = []
+            mixture_features_channels_list = []
             for size in target_sizes:
-                if feature_width == size:
+                if mixture_latent.size(-1) == size:
                     # No need to resize if the current size matches the target
-                    channels_list.append(mixture)
+                    mixture_features_channels_list.append(mixture_latent)
                 else:
-                    # Resize waveform to the target size
-                    resized_mixture = F.interpolate(mixture, size=(size,), mode='linear', align_corners=False)
-                    channels_list.append(resized_mixture)
-                    # feature_width = size  # Update current length for the next iteration
+                    # Resize mixture to the target size
+                    resized_mixture = F.interpolate(mixture_latent, size=(size, size), mode='bilinear', align_corners=False)
+                    mixture_features_channels_list.append(resized_mixture)
 
-
-            # Adjust channel dimensions to match `context_channels`
+            # Adjust channel dimensions to match model's channels
             # This involves expanding the channel dimension after downsampling
-            channels_list = [
-                torch.cat([channels_list[i]] * num, dim=1) if num != channels_list[i].shape[1]
-                else channels_list[i]
-                for i, num in enumerate([1, 512, 1024, 1024, 1024, 1024, 1024])
+            mixture_features_channels_list = [
+                torch.cat([mixture_features_channels_list[i]] * num, dim=1) if num != mixture_features_channels_list[i].shape[1]
+                else mixture_features_channels_list[i]
+                for i, num in enumerate(self.mixture_features_channels)
             ]
 
             # embedding = torch.randn(2, 4, 32).to(self.device)
             embedding = None
-            mixture_features_channels_list = None
-
+            
         #### concat mix to the noise for conditioning ####
-        if isinstance(batch, (list, tuple)) and self.class_cond and self.concat:
+        elif isinstance(batch, (list, tuple)) and self.class_cond and self.concat:
             waveforms, class_indexes, stems  = batch
 
             batch_size, channels, feature_width = waveforms.shape
@@ -1850,11 +1853,12 @@ class ClassCond_GEN_2D_TrackSampleLogger(ClassCond_GEN_TrackSampleLogger):
         model = pl_module.model
         
         # Extract mixture and original audio from the batch
-        latent, class_indexes, channels_list, embedding, mixture_features_channels_list = pl_module.get_input(batch)
+        # latent, class_indexes, channels_list, embedding, mixture_features_channels_list = pl_module.get_input(batch)
+        batch_size = batch[0].size(0)
 
         # Get start diffusion noise for whole batch
         noise = torch.randn(
-            (latent.size(0), self.channels, self.img_resolution, self.img_resolution), device=pl_module.device
+            (batch_size, self.channels, self.img_resolution, self.img_resolution), device=pl_module.device
         )
 
         # Dictionary to store generated samples
@@ -1867,7 +1871,7 @@ class ClassCond_GEN_2D_TrackSampleLogger(ClassCond_GEN_TrackSampleLogger):
         # Iterate over each one-hot encoded feature vector (each stem)
         for i, stem in enumerate(self.stems):
             # Create a feature tensor for the current stem for all items
-            current_features = torch.zeros(latent.size(0), len(self.stems)).to(pl_module.device)
+            current_features = torch.zeros(batch_size, len(self.stems)).to(pl_module.device)
             current_features[:, i] = 1  # Set the current stem feature to 1 (one-hot)
 
             latent, class_indexes, mixture_latent, embedding, mixture_features_channels_list = pl_module.get_input(batch, current_features)
@@ -1888,14 +1892,14 @@ class ClassCond_GEN_2D_TrackSampleLogger(ClassCond_GEN_TrackSampleLogger):
             )
             
             samples_wav = pl_module.CAE.decode(samples.squeeze(1)).unsqueeze(1)
-            # samples_wav  = torch.randn(latent.size(0), 1, 264600).to(pl_module.device)
+            # samples_wav  = torch.randn(batch_size, 1, 264600).to(pl_module.device)
             # samples_wav = F.pad(samples_wav, ((self.length - samples_wav.size(-1)) // 2, (self.length - samples_wav.size(-1) + 1) // 2), mode="constant", value=0)
             samples_wav = F.pad(samples_wav, (0, self.length - samples_wav.size(-1)), mode="constant", value=0)
 
             samples = rearrange(samples_wav, "b c t -> b t c").detach().cpu().numpy()
 
             # Store the generated samples
-            for idx in range(latent.size(0)):
+            for idx in range(batch_size):
                 # if steps not in generated_samples[stem]:
                 #     generated_samples[stem][steps] = []
                 generated_samples[stem].append(samples[idx])
@@ -1909,7 +1913,7 @@ class ClassCond_GEN_2D_TrackSampleLogger(ClassCond_GEN_TrackSampleLogger):
             stem_data = original_stems[:, i]
             stem_data =rearrange(stem_data, "b c t -> b t c").detach().cpu().numpy()
             original_samples[stem] = []
-            for idx in range(latent.size(0)):
+            for idx in range(batch_size):
                 original_samples[stem].append(stem_data[idx])  
         
         mixture_audios = batch[2].sum(1)[:, 0, :].detach().cpu().numpy()[..., np.newaxis] #channels_list[0][idx, 0, :].detach().cpu().numpy()[..., np.newaxis]
