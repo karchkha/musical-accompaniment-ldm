@@ -317,6 +317,7 @@ class SongUNet(torch.nn.Module):
         encoder_type        = 'residual',   # Encoder architecture: 'standard' for DDPM++, 'residual' for NCSN++.
         decoder_type        = 'standard',   # Decoder architecture: 'standard' for both DDPM++ and NCSN++.
         resample_filter     = [1,3,3,1],        # Resampling filter: [1,1] for DDPM++, [1,3,3,1] for NCSN++.
+        num_heads           = 1,
         training_mode = '',
         linear_probing=False,
     ):
@@ -335,7 +336,7 @@ class SongUNet(torch.nn.Module):
         init_zero = dict(init_mode='xavier_uniform', init_weight=1e-5)
         init_attn = dict(init_mode='xavier_uniform', init_weight=np.sqrt(0.2))
         block_kwargs = dict(
-            emb_channels=emb_channels, num_heads=1, dropout=dropout, skip_scale=np.sqrt(0.5), eps=1e-6,
+            emb_channels=emb_channels, num_heads=num_heads, dropout=dropout, skip_scale=np.sqrt(0.5), eps=1e-6,
             resample_filter=resample_filter, resample_proj=True, adaptive_scale=False,
             init=init, init_zero=init_zero, init_attn=init_attn,
         )
@@ -407,6 +408,7 @@ class SongUNet(torch.nn.Module):
                                                                **init_zero)
 
     def forward(self, x, noise_labels, noise_labels_s, class_labels, augment_labels=None, mixture=None):
+    # def forward(self, x, noise_labels=torch.randn(2, device="cuda:0"), noise_labels_s=None, class_labels=torch.randn(2, 4, device="cuda:0"), augment_labels=None, mixture=torch.randn(2,1,64,64, device="cuda:0")): ### this is for testing and seeing models structure
         # Mapping.
         emb = self.map_noise(noise_labels)
         emb = emb.reshape(emb.shape[0], 2, -1).flip(1).reshape(*emb.shape) # swap sin/cos
