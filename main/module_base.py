@@ -493,6 +493,9 @@ class Audio_LDM_Model(pl.LightningModule):
                 
                 # Get the active index from the one-hot vector
                 active_index = current_class_indexes.argmax(dim=1)
+                
+                waveforms = stems[torch.arange(stems.size(0)), active_index]
+                                
                 # Create a mask to exclude the active index
                 mask = torch.arange(stems.size(1), device=stems.device).unsqueeze(0) != active_index.unsqueeze(1)
                 # Sum all stems except the one at `active_index`
@@ -540,6 +543,9 @@ class Audio_LDM_Model(pl.LightningModule):
                 
                 # Get the active index from the one-hot vector
                 active_index = current_class_indexes.argmax(dim=1)
+                
+                waveforms = stems[torch.arange(stems.size(0)), active_index]
+                                
                 # Create a mask to exclude the active index
                 mask = torch.arange(stems.size(1), device=stems.device).unsqueeze(0) != active_index.unsqueeze(1)
                 # Sum all stems except the one at `active_index`
@@ -559,6 +565,11 @@ class Audio_LDM_Model(pl.LightningModule):
             
             if current_class_indexes is not None:
                 class_indexes = current_class_indexes
+                
+                # Get the active index from the one-hot vector
+                active_index = current_class_indexes.argmax(dim=1)
+                
+                waveforms = stems[torch.arange(stems.size(0)), active_index]
             mixture = None
             embedding = None
             mixture_features_channels_list = None
@@ -1905,6 +1916,97 @@ class ClassCond_GEN_2D_TrackSampleLogger(ClassCond_GEN_TrackSampleLogger):
                 generated_samples[stem].append(samples[idx])
 
         # get original stems
+        original_samples = {stem: {} for stem in self.stems}
+        
+        original_stems = batch[2]
+        
+        for i, stem in enumerate(self.stems):
+            stem_data = original_stems[:, i]
+            stem_data =rearrange(stem_data, "b c t -> b t c").detach().cpu().numpy()
+            original_samples[stem] = []
+            for idx in range(batch_size):
+                original_samples[stem].append(stem_data[idx])  
+        
+        mixture_audios = batch[2].sum(1)[:, 0, :].detach().cpu().numpy()[..., np.newaxis] #channels_list[0][idx, 0, :].detach().cpu().numpy()[..., np.newaxis]
+        
+        return  original_samples, generated_samples, mixture_audios
+    
+    
+#################################### Eval CAE ####################################################
+    
+class ClassCond_GEN_2D_TrackSampleLogger_CAE_EVAL(ClassCond_GEN_TrackSampleLogger):
+    def __init__(
+        self,
+        num_items: int,
+        channels: int,
+        img_resolution: int,
+        sampling_rate: int,
+        length: int,
+        sampling_steps: List[int],
+        diffusion_schedule: Schedule,
+        diffusion_sampler: Sampler,
+        stems = ['bass', 'drums', 'guitar', 'piano']
+    ) -> None:      
+        
+        super().__init__(
+            num_items=num_items,
+            channels=channels,
+            sampling_rate=sampling_rate,
+            length=length,
+            sampling_steps=sampling_steps,
+            diffusion_schedule=diffusion_schedule,
+            diffusion_sampler=diffusion_sampler,
+            stems = stems,
+        )
+        
+        self.img_resolution = img_resolution
+    
+    @torch.no_grad()  
+    def generate_sample(self, trainer, pl_module, batch):
+        
+        model = pl_module.model
+        
+        # Extract mixture and original audio from the batch
+        # latent, class_indexes, channels_list, embedding, mixture_features_channels_list = pl_module.get_input(batch)
+        batch_size = batch[0].size(0)
+
+        # Get start diffusion noise for whole batch
+        noise = torch.randn(
+            (batch_size, self.channels, self.img_resolution, self.img_resolution), device=pl_module.device
+        )
+
+        # Dictionary to store generated samples
+        generated_samples = {stem: [] for stem in self.stems}
+        
+        
+        # Iterate over each diffusion step size
+        # for steps in self.sampling_steps:
+        steps = self.sampling_steps
+        # Iterate over each one-hot encoded feature vector (each stem)
+        for i, stem in enumerate(self.stems):
+            # Create a feature tensor for the current stem for all items
+            current_features = torch.zeros(batch_size, len(self.stems)).to(pl_module.device)
+            current_features[:, i] = 1  # Set the current stem feature to 1 (one-hot)
+
+            latent, class_indexes, mixture_latent, embedding, mixture_features_channels_list = pl_module.get_input(batch, current_features)
+
+            # Sample from the model using the noise and the current one-hot features
+            samples = latent
+            
+            samples_wav = pl_module.CAE.decode(samples.squeeze(1)).unsqueeze(1)
+            # samples_wav  = torch.randn(batch_size, 1, 264600).to(pl_module.device)
+            # samples_wav = F.pad(samples_wav, ((self.length - samples_wav.size(-1)) // 2, (self.length - samples_wav.size(-1) + 1) // 2), mode="constant", value=0)
+            samples_wav = F.pad(samples_wav, (0, self.length - samples_wav.size(-1)), mode="constant", value=0)
+
+            samples = rearrange(samples_wav, "b c t -> b t c").detach().cpu().numpy()
+
+            # Store the generated samples
+            for idx in range(batch_size):
+                # if steps not in generated_samples[stem]:
+                #     generated_samples[stem][steps] = []
+                generated_samples[stem].append(samples[idx])
+
+        # get original stems ####
         original_samples = {stem: {} for stem in self.stems}
         
         original_stems = batch[2]

@@ -18,6 +18,7 @@ from .diffusion import (
 from .modules import MultiEncoder1d, UNet1d, UNetConditional1d
 from .utils import default, exists, to_list
 from ctm.networks import SongUNet
+from ctm.openaimodel_ctm import OpenAIUNetModel
 
 """
 Diffusion Classes (generic for 1d data)
@@ -98,7 +99,11 @@ class Model2d(nn.Module):
     ):
         super().__init__()
 
-        UNet = SongUNet
+        unet_type = kwargs.pop('unet_type', None)
+        if unet_type=='openAI':
+             UNet = OpenAIUNetModel
+        else:
+            UNet = SongUNet
 
         self.unet = UNet(**kwargs)
 
