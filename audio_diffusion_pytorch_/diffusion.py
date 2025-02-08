@@ -257,7 +257,7 @@ class MSDMSampler(Sampler):
     ) -> torch.Tensor:
 
         x = sigmas[0] * noises
-        _, num_sources, _  = x.shape    
+        # _, num_sources, _  = x.shape    
 
         # Initialize default values
         source = torch.zeros_like(x) if source is None else source

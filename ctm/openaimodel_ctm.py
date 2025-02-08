@@ -21,7 +21,7 @@ from .nn import (
     normalization,
     timestep_embedding,
 )
-
+from ctm.attention import SpatialTransformer
 
 def convert_module_to_f16(l):
     """
@@ -92,10 +92,12 @@ class TimestepEmbedSequential(nn.Sequential, TimestepBlock):
     support it as an extra input.
     """
 
-    def forward(self, x, emb, emb_s=None):
+    def forward(self, x, emb, emb_s=None, context=None):
         for layer in self:
             if isinstance(layer, TimestepBlock):
                 x = layer(x, emb, emb_s)
+            elif isinstance(layer, SpatialTransformer):
+                x = layer(x, context)
             else:
                 x = layer(x)
         return x
@@ -572,7 +574,6 @@ class QKVAttentionLegacy(nn.Module):
 #     def forward(self, qkv):
 #         """
 #         Apply QKV attention.
-
 #         :param qkv: an [N x (3 * H * C) x T] tensor of Qs, Ks, and Vs.
 #         :return: an [N x (H * C) x T] tensor after attention.
 #         """
@@ -587,7 +588,11 @@ class QKVAttentionLegacy(nn.Module):
 #             (k * scale).view(bs * self.n_heads, ch, length),
 #         )  # More stable with f16 than dividing afterwards
 #         weight = th.softmax(weight.float(), dim=-1).type(weight.dtype)
-#         a = th.einsum("bts,bcs->bct", weight, v.reshape(bs * self.n_heads, ch, length))
+#         a = th.einsum(
+#             "bts,bcs->bct",
+#             weight,
+#             v.reshape(bs * self.n_heads, ch, length)
+#         )
 #         return a.reshape(bs, -1, length)
 
 #     @staticmethod
@@ -632,7 +637,7 @@ class QKVAttention(nn.Module):
 
     @staticmethod
     def count_flops(model, _x, y):
-        return count_flops_attn(model, _x, y)
+        return count_flops_attn(model, _x, y) #
 
 
 class UNetModel(nn.Module):
@@ -689,6 +694,9 @@ class UNetModel(nn.Module):
         use_new_attention_order=False,
         training_mode='',
         attention_type='flash',
+        transformer_depth=1,  # custom transformer support
+        context_dim=None,  # custom transformer support
+        legacy=True,
     ):
         super().__init__()
 
@@ -752,6 +760,17 @@ class UNetModel(nn.Module):
                 ]
                 ch = int(mult * model_channels)
                 if ds in attention_resolutions:
+                    if num_head_channels == -1:
+                        dim_head = ch // num_heads
+                    else:
+                        num_heads = ch // num_head_channels
+                        dim_head = num_head_channels
+                    if legacy:
+                        dim_head = (
+                            ch // num_heads
+                            if attention_type=="spatial"
+                            else num_head_channels
+                        )
                     layers.append(
                         AttentionBlock(
                             ch,
@@ -760,6 +779,15 @@ class UNetModel(nn.Module):
                             num_head_channels=num_head_channels,
                             use_new_attention_order=use_new_attention_order,
                             attention_type=attention_type,
+                        )
+                        if attention_type != "spatial"
+                        else SpatialTransformer(
+                            ch,
+                            num_heads,
+                            dim_head,
+                            depth=transformer_depth,
+                            context_dim=context_dim,
+                            no_context=True,
                         )
                     )
                 self.input_blocks.append(TimestepEmbedSequential(*layers))
@@ -791,6 +819,14 @@ class UNetModel(nn.Module):
                 ds *= 2
                 self._feature_size += ch
 
+        if num_head_channels == -1:
+            dim_head = ch // num_heads
+        else:
+            num_heads = ch // num_head_channels
+            dim_head = num_head_channels
+        if legacy:
+            # num_heads = 1
+            dim_head = ch // num_heads if attention_type == "spatial" else num_head_channels
         self.middle_block = TimestepEmbedSequential(
             ResBlock(
                 ch,
@@ -808,6 +844,15 @@ class UNetModel(nn.Module):
                 num_head_channels=num_head_channels,
                 use_new_attention_order=use_new_attention_order,
                 attention_type=attention_type,
+            )
+            if attention_type != "spatial"
+            else SpatialTransformer(
+                ch,
+                num_heads,
+                dim_head,
+                depth=transformer_depth,
+                context_dim=context_dim,
+                no_context=True,
             ),
             ResBlock(
                 ch,
@@ -839,6 +884,18 @@ class UNetModel(nn.Module):
                 ]
                 ch = int(model_channels * mult)
                 if ds in attention_resolutions:
+                    if num_head_channels == -1:
+                        dim_head = ch // num_heads
+                    else:
+                        num_heads = ch // num_head_channels
+                        dim_head = num_head_channels
+                    if legacy:
+                        # num_heads = 1
+                        dim_head = (
+                            ch // num_heads
+                            if attention_type == "spatial"
+                            else num_head_channels
+                        )
                     layers.append(
                         AttentionBlock(
                             ch,
@@ -847,6 +904,15 @@ class UNetModel(nn.Module):
                             num_head_channels=num_head_channels,
                             use_new_attention_order=use_new_attention_order,
                             attention_type=attention_type,
+                        )
+                        if attention_type != "spatial"
+                        else SpatialTransformer(
+                            ch,
+                            num_heads,
+                            dim_head,
+                            depth=transformer_depth,
+                            context_dim=context_dim,
+                            no_context=True,
                         )
                     )
                 if level and i == num_res_blocks:
