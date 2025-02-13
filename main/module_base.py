@@ -640,6 +640,7 @@ class DatamoduleWithValidation(pl.LightningDataModule):
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
             shuffle=True,
+            collate_fn=getattr(self.data_train, "transforms", None), 
         )
 
     def val_dataloader(self) -> DataLoader:

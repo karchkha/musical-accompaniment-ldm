@@ -116,7 +116,7 @@ def repitch(wav, pitch, tempo, voice=False, quick=False, samplerate=44100):
     save_audio(wav, infile.name, samplerate, clip='clamp')
     command = [
         "soundstretch",
-        # "/data/reach/karchkhadze/anaconda3/envs/ctm/bin/soundstretch",
+        # "/data/reach/karchkhadze/anaconda3/envs/ctm_gen/bin/soundstretch",
         infile.name,
         outfile.name,
         f"-pitch={pitch}",
