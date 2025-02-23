@@ -206,7 +206,8 @@ class ADPM2Sampler(Sampler):
     ) -> Tensor:
         x = sigmas[0] * noise
         # Denoise to sample
-        for i in range(num_steps - 1):
+        # for i in range(num_steps - 1):
+        for i in tqdm.tqdm(range(num_steps - 1)):
             x = self.step(x, fn=fn, sigma=sigmas[i], sigma_next=sigmas[i + 1])  # type: ignore # noqa
         return x
 
@@ -221,7 +222,8 @@ class ADPM2Sampler(Sampler):
     ) -> Tensor:
         x = sigmas[0] * torch.randn_like(source)
 
-        for i in range(num_steps - 1):
+        # for i in range(num_steps - 1):
+        for i in tqdm.tqdm(range(num_steps - 1)):
             # Noise source to current noise level
             source_noisy = source + sigmas[i] * torch.randn_like(source)
             for r in range(self.num_resamples):

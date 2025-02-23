@@ -1931,8 +1931,138 @@ class ClassCond_GEN_2D_TrackSampleLogger(ClassCond_GEN_TrackSampleLogger):
         mixture_audios = batch[2].sum(1)[:, 0, :].detach().cpu().numpy()[..., np.newaxis] #channels_list[0][idx, 0, :].detach().cpu().numpy()[..., np.newaxis]
         
         return  original_samples, generated_samples, mixture_audios
+
+
+
+
+class ClassCond_Inpaint_2D_TrackSampleLogger(ClassCond_GEN_2D_TrackSampleLogger):
+    def __init__(
+        self,
+        num_items: int,
+        channels: int,
+        img_resolution: int,
+        sampling_rate: int,
+        length: int,
+        sampling_steps: List[int],
+        diffusion_schedule: Schedule,
+        diffusion_sampler: Sampler,
+        stems: List[str], #['bass', 'drums', 'guitar', 'piano'],
+        percentage: float,
+        
+    ) -> None:
+        # Initialize the base class
+        super().__init__(
+            num_items=num_items,
+            channels=channels,
+            img_resolution=img_resolution,
+            sampling_rate=sampling_rate,
+            length=length,
+            sampling_steps=sampling_steps,
+            diffusion_schedule=diffusion_schedule,
+            diffusion_sampler=diffusion_sampler,
+            stems=stems,
+        )
+
+        # Add custom logic for the subclass
+        self.percentage = percentage
+   
+    def create_temporal_mask(self, like, mask_ratio):
+        """
+        Creates a temporal mask over the image-like spectrogram.
+        - mask_ratio: percentage of the time axis to mask (e.g., 50%)
+        - Assumes: First dim = Frequency (F), Second dim = Time (T)
+        """
+        _, _, F, T = like.shape  # Batch, Channels, Frequency, Time
+        device = like.device
+        mask = torch.ones_like(like, dtype=torch.bool)
+
+        # Compute time range to mask (masking the last portion)
+        t_mask = int(T * mask_ratio)  # Number of time steps to mask
+        t_start = T - t_mask  # Start masking from this index
+
+        # Apply mask to the last portion of the time axis
+        mask[:, :, :, t_start:] = False  # Set masked area to False
+        return mask
     
-    
+    def generate_sample(self, trainer, pl_module, batch):
+        model = pl_module.model
+
+        # Extract mixture and original audio from the batch
+        batch_size = batch[0].size(0)
+
+        # Get start diffusion noise for whole batch
+        noise = torch.randn(
+            (batch_size, self.channels, self.img_resolution, self.img_resolution), device=pl_module.device
+        )
+
+        # Dictionary to store generated samples
+        generated_samples = {stem: [] for stem in self.stems}
+
+        # Use the same sampling steps
+        steps = self.sampling_steps
+
+        # Iterate over each one-hot encoded feature vector (each stem)
+        for i, stem in enumerate(self.stems):
+            # Create a feature tensor for the current stem for all items
+            current_features = torch.zeros(batch_size, len(self.stems)).to(pl_module.device)
+            current_features[:, i] = 1  # Set the current stem feature to 1 (one-hot)
+
+            latent, class_indexes, mixture_latent, embedding, mixture_features_channels_list = pl_module.get_input(batch, current_features)
+
+
+            # Mask part of the image
+            inpaint = latent.clone()  # Extract corresponding category image
+            inpaint_mask = self.create_temporal_mask(like=noise, mask_ratio=self.percentage)
+
+            # Inject noise in the masked area
+            inpaint = torch.where(inpaint_mask, inpaint, noise.to(inpaint.dtype))
+
+            # Inpaint from the model using the noise and the current one-hot features
+            samples = model.inpaint(
+                inpaint=inpaint,
+                inpaint_mask = inpaint_mask, 
+                noise_labels_s=None,
+                # features=current_features,
+                sampler=self.diffusion_sampler,
+                sigma_schedule=self.diffusion_schedule,
+                num_steps=steps,
+                class_labels = class_indexes,
+                augment_labels=embedding,
+                mixture=mixture_latent,
+                # channels_list=channels_list,
+                # mixture_features_channels_list=mixture_features_channels_list,
+            )
+            
+            samples_wav = pl_module.CAE.decode(samples.squeeze(1)).unsqueeze(1)
+            # samples_wav  = torch.randn(batch_size, 1, 264600).to(pl_module.device)
+            # samples_wav = F.pad(samples_wav, ((self.length - samples_wav.size(-1)) // 2, (self.length - samples_wav.size(-1) + 1) // 2), mode="constant", value=0)
+            samples_wav = F.pad(samples_wav, (0, self.length - samples_wav.size(-1)), mode="constant", value=0)
+
+            samples = rearrange(samples_wav, "b c t -> b t c").detach().cpu().numpy()
+
+            # Store the generated samples
+            for idx in range(batch_size):
+                # if steps not in generated_samples[stem]:
+                #     generated_samples[stem][steps] = []
+                generated_samples[stem].append(samples[idx])
+
+        # get original stems
+        original_samples = {stem: {} for stem in self.stems}
+        
+        original_stems = batch[2]
+        
+        for i, stem in enumerate(self.stems):
+            stem_data = original_stems[:, i]
+            stem_data =rearrange(stem_data, "b c t -> b t c").detach().cpu().numpy()
+            original_samples[stem] = []
+            for idx in range(batch_size):
+                original_samples[stem].append(stem_data[idx])  
+        
+        mixture_audios = batch[2].sum(1)[:, 0, :].detach().cpu().numpy()[..., np.newaxis] #channels_list[0][idx, 0, :].detach().cpu().numpy()[..., np.newaxis]
+        
+        return  original_samples, generated_samples, mixture_audios
+
+
 #################################### Eval CAE ####################################################
     
 class ClassCond_GEN_2D_TrackSampleLogger_CAE_EVAL(ClassCond_GEN_TrackSampleLogger):
