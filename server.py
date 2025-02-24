@@ -54,7 +54,7 @@ from queue import Queue
 # Create a tensor of size [4, 163840] initialized with -inf
 # tensor = torch.full((4, 163840), float('-inf'))
 
-tensor = torch.full((1, 1, 264600), 0.0)
+tensor = torch.full((1, 264600), 0.0)
 
 latent = mask = torch.full((1, 1, 64, 64), 0.0)
 
@@ -66,6 +66,7 @@ steps = 10
 config = {}
 package_size = 5120
 percentage = 0.25
+pr_win_mul = 1.0
 filename = "configs/for_server/Diff_latent_cond_gen_concat_eval.yaml"
 diffusion_sampler = None
 diffusion_schedule = None
@@ -158,7 +159,7 @@ def instantiate_from_config(config, **kwargs):
     return cls(**config_dict, **kwargs)
 
 def load_network(unused_addr):
-    global latent_diffusion, stemidx_to_inpaint, steps, tensor, MSAProc, latent, mask, config, package_size, filename, percentage, diffusion_sampler, diffusion_schedule
+    global latent_diffusion, stemidx_to_inpaint, steps, tensor, MSAProc, latent, mask, config, package_size, filename, percentage, diffusion_sampler, diffusion_schedule, pr_win_mul
            
     config = yaml.load(open(filename, 'r'), Loader=yaml.FullLoader)
        
@@ -188,109 +189,14 @@ def load_network(unused_addr):
     steps=cfg.audio_samples_logger.sampling_steps
 
     # MSAProc = MultiSourceAudioProcessor(cfg)
-  
-    mask = create_temporal_mask(mask, mask_ratio = 2*percentage).to("cuda:0")
+    mask = create_temporal_mask(mask, mask_ratio = percentage).to("cuda:0")
     
-    latent = latent_diffusion.CAE.encode(tensor.squeeze(1)).unsqueeze(1) 
+    latent = latent_diffusion.CAE.encode(tensor).unsqueeze(1) 
 
     # client.send_message("/ready", True)
     print()
 
 #########################################################################
-
-class MultiSourceAudioProcessor:
-    def __init__(self, config) -> None:
-        super().__init__()
-        """
-        A class to process audio stems from a tensor and fill a batch.
-
-        Parameters:
-        - config: Configuration dictionary with preprocessing settings.
-        - stft: An instance of the STFT class for mel spectrogram generation.
-        - audio_tensor: A tensor containing audio stems with shape (4, 163840).
-        """
-
-        self.config = config['data']['params']
-
-        # self.read_datafile(dataset_path, label_path, train)
-
-        self.melbins = self.config["preprocessing"]["mel"]["n_mel_channels"]
-        self.freqm = self.config["preprocessing"]["mel"]["freqm"]
-        self.timem = self.config["preprocessing"]["mel"]["timem"]
-        self.mixup = self.config["augmentation"]["mixup"]
-        self.sampling_rate = self.config["preprocessing"]["audio"]["sampling_rate"]
-        self.hopsize = self.config["preprocessing"]["stft"]["hop_length"]
-        self.target_length = self.config["preprocessing"]["mel"]["target_length"]
-        self.use_blur = self.config["preprocessing"]["mel"]["blur"]
-        self.segment_length = int(self.target_length * self.hopsize)
-        
-        # ajdust segment lenght coresponding to percentage
-        self.percentage = percentage # self.config["path"]["percentage"]
-        # full = int(config['preprocessing']['mel']['target_length'] )
-        perc = int(self.config['preprocessing']['mel']['target_length'] *  (self.percentage))
-        self.segment_step = int(perc * self.config['preprocessing']['stft']['hop_length'] * (22050/16000))
-        
-        self.STFT = Audio.stft.TacotronSTFT(
-            self.config["preprocessing"]["stft"]["filter_length"],
-            self.config["preprocessing"]["stft"]["hop_length"],
-            self.config["preprocessing"]["stft"]["win_length"],
-            self.config["preprocessing"]["mel"]["n_mel_channels"],
-            self.config["preprocessing"]["audio"]["sampling_rate"],
-            self.config["preprocessing"]["mel"]["mel_fmin"],
-            self.config["preprocessing"]["mel"]["mel_fmax"],
-        )
-
-        print(f'\n\n| Audio processor started')
-
-    def get_mel_from_waveform(self, waveform):
-        # waveform
-        y = waveform.unsqueeze(0) #self.read_wav(filename, frame_offset)
-        
-        # get mel
-        y.requires_grad=False
-        melspec, _, _ = self.STFT.mel_spectrogram(y)
-        melspec = melspec[0].T
-        if melspec.size(0) < self.target_length:
-            melspec = torch.nn.functional.pad(melspec, (0,0,0,self.target_length - melspec.size(0)), 'constant', 0.)
-        else:
-            melspec = melspec[0: self.target_length, :]
-        if melspec.size(-1) % 2 != 0:
-            melspec = melspec[:, :-1]
-
-        return melspec
-
-    def fill_batch_from_audio(self, audio, batch):
-        """
-        Fill the global batch dictionary with data derived from the global audio tensor.
-
-        Parameters:
-        - audio: Tensor of shape (4, 163840), representing 4 audio stems.
-        - stft: An instance of the STFT class for mel spectrogram generation.
-        - config: Configuration dictionary with preprocessing settings.
-        """
-         
-        # Process each stem
-        fbank_stems = []
-
-        for stem_idx in range(audio.size(0)):  # Iterate over 4 stems
-            audio_tensor = audio[stem_idx]
-
-            # Compute mel spectrogram
-            fbank = self.get_mel_from_waveform(audio_tensor)  # Add batch dimension
-            # fbank = fbank.squeeze(0).T  # Transpose to match (time, frequency)
-
-            fbank_stems.append(fbank)
-
-        # Update batch fields
-        batch['waveform_stems'] = audio  # Directly assign the audio tensor
-        # batch['waveform'] = audio.sum(dim=0)  # Sum all stems to create the mixed waveform
-        batch['fbank_stems'] = torch.stack(fbank_stems).unsqueeze(0)  # Stack spectrograms for all stems
-        # batch['fbank'][0] = self.get_mel_from_waveform(batch['waveform'])  # Sum spectrograms for mixed signal
-
-        batch['fname'] = ['processed_audio']  # Update the file name
-        
-        return batch
-
 
 
 #########################################################################
@@ -316,7 +222,7 @@ def create_temporal_mask(like, mask_ratio):
 #########################################################################
 
 def predict(*args):
-    global latent_diffusion, tensor, waveforms, stems_to_inpaint, stemidx_to_inpaint, steps, batch, MSAProc, package_size, percentage, config, diffusion_sampler, diffusion_schedule, z, config
+    global latent_diffusion, tensor, waveforms, stems_to_inpaint, stemidx_to_inpaint, steps, batch, MSAProc, package_size, percentage, config, diffusion_sampler, diffusion_schedule, z, config, latent
     
     # batch = MSAProc.fill_batch_from_audio(tensor, batch)
 
@@ -329,18 +235,19 @@ def predict(*args):
        # Create a zero-initialized feature tensor for batch size 1
         current_features = torch.zeros(1, len(config['audio_samples_logger']['stems']), device=latent_diffusion.device)
 
-        # Read which stems to preserve (not inpaint)
-        stemidx_to_preserve = stemidx_to_inpaint  # Example: [0]
-
         # Set the one-hot vector for preserving the given stems
-        for idx in stemidx_to_preserve:
+        for idx in stemidx_to_inpaint:
             current_features[:, idx] = 1  # Mark preserved stems        
         
         # latent, class_indexes, mixture_latent, embedding, mixture_features_channels_list = latent_diffusion.get_input(batch, current_features)
         ###########################
   
-        mixture_latent = latent_diffusion.CAE.encode(tensor.squeeze(1)).unsqueeze(1)
-            
+        mixture_latent = latent_diffusion.CAE.encode(tensor).unsqueeze(1)
+        
+        ## Add pr_win_mul * percentage noise patch to the mixture to make future prediction possible
+        start_idx = int(mixture_latent.size(-1)  * (1 - pr_win_mul*percentage))
+        mixture_latent[:, :, :, start_idx:] = noise[:, :, :, start_idx:].clone()
+                    
         ###########################
 
         # Mask part of the image
@@ -363,6 +270,10 @@ def predict(*args):
             # channels_list=channels_list,
             # mixture_features_channels_list=mixture_features_channels_list,
         )
+        
+        # update latet vectro for future inpainting
+        start_idx = int(samples.size(-1)  * (1 - percentage))
+        latent[:, :, :, start_idx:] = samples[:, :, :, start_idx:].clone()
         
         samples_wav = latent_diffusion.CAE.decode(samples.squeeze(1)).unsqueeze(1)
         samples_wav = F.pad(samples_wav, (0, config['audio_samples_logger']['length'] - samples_wav.size(-1)), mode="constant", value=0).cpu().numpy()
@@ -409,7 +320,8 @@ def predict(*args):
 
     # Shift tensor data by percentage
     # percentage = config['data']['params']['path']['percentage']
-    shift_tensor_data(None, percentage)
+    shift_tensor_data(tensor, percentage)
+    shift_tensor_data(latent, percentage)
 
 
 # Create a queue to hold incoming messages
@@ -449,7 +361,7 @@ message_queue = Queue()
 #         message_queue.task_done()
 
 def process_message_queue():
-    global tensor, config, percentage
+    global tensor, config, percentage, pr_win_mul
     while True:
         # Get a message from the queue
         track_id, start_index, values = message_queue.get()
@@ -457,7 +369,7 @@ def process_message_queue():
         depth = tensor.size(-1)  # Depth of the tensor
 
         # Calculate the target range [100 - 2 * percentage, 100 - percentage]
-        start_idx = int(depth * (1 - 2 * percentage))
+        start_idx = int(depth * (1 - (pr_win_mul+1) * percentage))
         end_idx = int(depth * (1 - percentage))
 
         # Calculate the chunk's target range
@@ -467,7 +379,7 @@ def process_message_queue():
 
         track_id = 0 ### manually settting this because we only have 1 track here
         # Populate the tensor with incoming data
-        tensor[track_id, track_id, range_start:range_end] = torch.tensor(values)
+        tensor[track_id, range_start:range_end] = torch.tensor(values)
 
         # print(f"Track {track_id}: Populated indices {range_start} to {range_end}.")
 
@@ -490,19 +402,39 @@ def buffer_handler(unused_addr, track_id, start_index, *values):
 
 
 
+def shift_tensor_data(tensor: torch.Tensor, percentage: float):
+    """
+    Shifts the data in the last dimension to the left by a given percentage.
+    The emptied space at the end is filled with zeros.
 
-def shift_tensor_data(unused_addr, percentage):
-    global tensor
-    depth = tensor.size(-1)
+    Parameters:
+    - tensor (torch.Tensor): Input tensor of any shape.
+    - percentage (float): Fraction of the last dimension to shift (0.0 - 1.0).
 
+    Supports tensors of any shape (2D, 3D, 4D, etc.).
+    """
+    if not (0.0 <= percentage <= 1.0):
+        raise ValueError(f"Percentage must be between 0.0 and 1.0, got {percentage}")
+
+    # Get the size of the last dimension
+    last_dim_size = tensor.size(-1)
+    
     # Calculate the shift size
-    shift_size = int(depth * percentage)
+    shift_size = int(last_dim_size * percentage)
+    if shift_size == 0:
+        return  # No need to shift if percentage is too small
 
-    # Shift data to the left
-    for track_id in range(tensor.size(0)):
-        temp_tensor = tensor[track_id].clone()  # Clone the tensor to avoid overlap
-        tensor[track_id, :-shift_size] = temp_tensor[shift_size:]  # Shift left
-        tensor[track_id, -shift_size:] = 0.0  # Clear the trailing area
+    # Create a temporary copy to prevent data overlap issues
+    temp_tensor = tensor.clone()
+
+    # Shift data left along the last dimension
+    tensor[..., :-shift_size] = temp_tensor[..., shift_size:]
+
+    # Zero out the remaining part at the end
+    tensor[..., -shift_size:] = 0.0
+
+    print(f"Shifted tensor left by {shift_size} elements along last dimension.")
+
 
     # print(f"Tensor data shifted to the left by {shift_size} samples.")
 
@@ -537,9 +469,15 @@ def reset_tensor(unused_addr, *args):
     print_tensor(True)
 
 def print_tensor(unused_addr, *args):
-    global tensor
+    global tensor, latent
 
     print(f"Received /print message with args: {args}")
+
+    import torchaudio
+
+    # Save as WAV file
+    torchaudio.save("audio.wav", tensor, 44100)
+    print(f"Saved {filename} with shape {tensor.shape} at Hz")
 
     # Plot each track in separate subplots
     track_names = ["Bass", "Drums", "Guitar", "Piano"]
@@ -560,6 +498,22 @@ def print_tensor(unused_addr, *args):
     plt.tight_layout()
     plt.savefig("tensor_plot_subplots.png")
     plt.close()  # Close the figure to free memory
+    
+    plt.figure(figsize=(10, 10))  # Adjust figure size for better readability
+
+    plt.subplot(num_tracks, 1, track_id + 1)  # Create a subplot for each track
+    plt.imshow(latent[0,0].cpu().numpy())
+    plt.title(f"latent")
+    # plt.xlabel("Sample Index")
+    # plt.ylabel("Amplitude")
+    # plt.grid()
+    # plt.legend()
+
+    # Adjust layout and save the figure
+    plt.tight_layout()
+    plt.savefig("latent.png")
+    plt.close()  # Close the figure to free memory
+
 
     print("Tensor plot with subplots saved to tensor_plot_subplots.png")
 
@@ -602,6 +556,17 @@ def update_percentage(unused_addr, new_percentage):
     print(f"Updated percentage to {new_percentage}")
 
 
+def update_pr_win_mul(unused_addr, new_pr_win_mul):
+    global pr_win_mul, mask
+
+    if new_pr_win_mul < 0.0 or new_pr_win_mul > 2.0:
+        print(f"Invalid pr_win_mul received: {new_pr_win_mul}. Ignoring.")
+        return
+
+    pr_win_mul = float(new_pr_win_mul)
+    print(f"Updated pr_win_mul to {new_pr_win_mul}")
+
+
 # Dispatcher to route messages to handlers
 dispatcher = dispatcher.Dispatcher()
 
@@ -616,12 +581,13 @@ dispatcher.map("/packet_test", packet_test_handler)
 dispatcher.map("/update_package_size", update_package_size)
 dispatcher.map("/update_percentage", update_percentage)
 dispatcher.map("/predict_instruments", handle_predict_instruments)
+dispatcher.map("/pr_win_mul", update_pr_win_mul)
 
 
 dispatcher.map("/load_model", load_network)
 dispatcher.map("/predict", predict)
 
-dispatcher.map("/shift", shift_tensor_data)
+# dispatcher.map("/shift", shift_tensor_data)
 
 # OSC Server Setup
 def start_server(ip, port):
@@ -645,8 +611,8 @@ if __name__ == "__main__":
 
     ### client
     client_port=str(args.clientport)
-    # client = udp_client.SimpleUDPClient(args.client_ip, args.clientport)
-    client = udp_client.SimpleUDPClient("137.110.39.29", args.clientport)
+    client = udp_client.SimpleUDPClient(args.client_ip, args.clientport)
+    # client = udp_client.SimpleUDPClient("137.110.33.121", args.clientport)
     print(f"\nWill be comunicating with client on {args.client_ip}:{args.clientport}")
     
     # client = udp_client.SimpleUDPClient("127.0.0.1", args.clientport)
