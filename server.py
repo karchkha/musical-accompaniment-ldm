@@ -11,6 +11,8 @@ and gives their PID. For each process type, 'kill XXXX' where XXXX is PID.
 import argparse
 import numpy as np
 import torch
+import matplotlib
+matplotlib.use("Agg")  # Use a non-GUI backend
 import matplotlib.pyplot as plt
 from pythonosc import dispatcher
 from pythonosc import osc_server
@@ -30,7 +32,7 @@ from main.module_base import Audio_LDM_Model
 import importlib
 import torch.nn.functional as F
 # import src.utilities.audio as Audio
-
+import torchaudio
 # from torchinfo import summary
 import time
 
@@ -473,8 +475,6 @@ def print_tensor(unused_addr, *args):
     global tensor, latent
 
     print(f"Received /print message with args: {args}")
-
-    import torchaudio
 
     # Save as WAV file
     torchaudio.save("audio.wav", tensor, 44100)
