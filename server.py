@@ -297,16 +297,16 @@ def predict(*args):
                 # for i in range(0, 163840, package_size):
                 # Send only the percentage part in packages
                 for j in range(start_idx, end_idx, package_size):
-
-                    # Build an OSC bundle
                     bundle = osc_bundle_builder.OscBundleBuilder(osc_bundle_builder.IMMEDIATELY)
                     msg = osc_message_builder.OscMessageBuilder(address="/"+stem_name)
-                    
-                    # Add package of data to the message
-                    for k in range(package_size):
+
+                    # Determine the actual number of elements in this package
+                    remaining = min(package_size, end_idx - j)  # Ensures last package is correct
+
+                    # Add the correct amount of data
+                    for k in range(remaining):  
                         prediction_for_sending = flatten_prediction[j + k]
                         msg.add_arg(prediction_for_sending, arg_type="f")  # Specify 'f' for float32
-
 
                     # Add the message to the bundle
                     bundle.add_content(msg.build())
@@ -314,6 +314,7 @@ def predict(*args):
 
                     # Send the bundle
                     client.send(bundle)
+
                     # time.sleep(0.0000001)
                         
             client.send_message("/server_predicted", True)
