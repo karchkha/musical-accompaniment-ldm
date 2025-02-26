@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from einops import rearrange, reduce
 from torch import Tensor
 import tqdm
+import random
 
 from .utils import default, exists
 import torchaudio.transforms as T
@@ -384,7 +385,9 @@ class Diffusion(nn.Module):
         sigma_distribution: Distribution,
         sigma_data: float,  # data distribution standard deviation
         dynamic_threshold: float = 0.0,
-        lambda_perceptual: float = 0.0  # Add lambda_perceptual as a parameter
+        lambda_perceptual: float = 0.0, # Add lambda_perceptual as a parameter
+        inpaint_mask_ratios: list[float] = None,
+        pr_win_mul: list[float] = None,
     ):
         super().__init__()
 
@@ -393,6 +396,8 @@ class Diffusion(nn.Module):
         self.sigma_distribution = sigma_distribution
         self.dynamic_threshold = dynamic_threshold
         self.lambda_perceptual = lambda_perceptual  
+        self.inpaint_mask_ratios = inpaint_mask_ratios
+        self.pr_win_mul = pr_win_mul
 
         # Initialize PerceptualLoss if lambda_perceptual > 0
         self.perceptual_loss_fn = (
@@ -452,6 +457,24 @@ class Diffusion(nn.Module):
         # Computes weight depending on data distribution
         return (sigmas ** 2 + self.sigma_data ** 2) * (sigmas * self.sigma_data) ** -2
 
+    def create_temporal_mask(self, like, mask_ratio):
+        """
+        Creates a temporal mask over the image-like spectrogram.
+        - mask_ratio: percentage of the time axis to mask (e.g., 50%)
+        - Assumes: First dim = Frequency (F), Second dim = Time (T)
+        """
+        _, F, T = like.shape  # Batch, Channels, Frequency, Time
+        device = like.device
+        mask = torch.ones_like(like, dtype=torch.bool)
+
+        # Compute time range to mask (masking the last portion)
+        t_mask = int(T * mask_ratio)  # Number of time steps to mask
+        t_start = T - t_mask  # Start masking from this index
+
+        # Apply mask to the last portion of the time axis
+        mask[:, :, t_start:] = False  # Set masked area to False
+        return mask
+
     def forward(self, x: Tensor, noise: Tensor = None, **kwargs) -> Tensor:
         batch, device = x.shape[0], x.device
 
@@ -460,8 +483,46 @@ class Diffusion(nn.Module):
         sigmas_padded = sigmas.view(sigmas.shape[0], *([1] * (x.ndim - 1)))
 
         # Add noise to input
-        noise = default(noise, lambda: torch.randn_like(x))
-        x_noisy = x + sigmas_padded * noise
+        # noise = default(noise, lambda: torch.randn_like(x))
+        # x_noisy = x + sigmas_padded * noise
+        # Add noise normally if no inpaint mask ratios are given
+        if not self.inpaint_mask_ratios:
+            noise = default(noise, lambda: torch.randn_like(x))
+            x_noisy = x + sigmas_padded * noise
+        else:
+            # Choose a random mask ratio for each batch item
+            mask_ratios = torch.tensor(
+                [random.choice(self.inpaint_mask_ratios) for _ in range(batch)],
+                device=device,
+            )
+
+            # Generate the corresponding masks
+            masks = torch.stack([self.create_temporal_mask(x[i], mask_ratios[i]) for i in range(batch)])
+            
+            # Create noise
+            noise = default(noise, lambda: torch.randn_like(x))
+
+            # Apply noise only to the last part of the masked image
+            # x_noisy = x.clone()
+            # x_noisy[~masks] += sigmas_padded[~masks] * noise[~masks]
+            x_noisy = x + (sigmas_padded * noise) * (~masks).float()
+
+
+            # Apply masking logic to kwargs['mixture']
+            if "mixture" in kwargs:
+                mixture = kwargs["mixture"].clone()
+                for i in range(batch):
+                    mask_ratio = mask_ratios[i].item()
+                    num_masks = random.choice(self.pr_win_mul)  # Choose how many times to apply mask ratio
+
+                    # Determine how much of the last part to mask
+                    total_mask_size = int(mixture.shape[-1] * (mask_ratio * num_masks))
+                    if total_mask_size > 0:
+                        start_idx = mixture.shape[-1] - total_mask_size
+                        mixture[i, :, :, start_idx:] = noise[i, :, :, start_idx:]  # Replace with noise
+
+
+                kwargs["mixture"] = mixture
 
         # Compute denoised values
         x_denoised = self.denoise_fn(x_noisy, sigmas=sigmas, **kwargs)

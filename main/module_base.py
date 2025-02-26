@@ -1948,6 +1948,7 @@ class ClassCond_Inpaint_2D_TrackSampleLogger(ClassCond_GEN_2D_TrackSampleLogger)
         diffusion_sampler: Sampler,
         stems: List[str], #['bass', 'drums', 'guitar', 'piano'],
         percentage: float,
+        pr_win_mul: int,
         
     ) -> None:
         # Initialize the base class
@@ -1965,6 +1966,7 @@ class ClassCond_Inpaint_2D_TrackSampleLogger(ClassCond_GEN_2D_TrackSampleLogger)
 
         # Add custom logic for the subclass
         self.percentage = percentage
+        self.pr_win_mul = pr_win_mul  
    
     def create_temporal_mask(self, like, mask_ratio):
         """
@@ -2008,6 +2010,15 @@ class ClassCond_Inpaint_2D_TrackSampleLogger(ClassCond_GEN_2D_TrackSampleLogger)
             current_features[:, i] = 1  # Set the current stem feature to 1 (one-hot)
 
             latent, class_indexes, mixture_latent, embedding, mixture_features_channels_list = pl_module.get_input(batch, current_features)
+
+
+            # Apply masking logic to kwargs['mixture']
+            if self.pr_win_mul:
+                # Determine how much of the last part to mask
+                total_mask_size = int(mixture_latent.shape[-1] * (self.percentage * self.pr_win_mul))
+                if total_mask_size > 0:
+                    start_idx = mixture_latent.shape[-1] - total_mask_size
+                    mixture_latent[:, :, :, start_idx:] = noise[:, :, :, start_idx:]  # Replace with noise
 
 
             # Mask part of the image

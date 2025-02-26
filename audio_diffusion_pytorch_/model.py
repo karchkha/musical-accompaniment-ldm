@@ -95,6 +95,8 @@ class Model2d(nn.Module):
         diffusion_dynamic_threshold: float,
         lambda_perceptual: float = 0.0,
         use_classifier_free_guidance: bool = False,
+        inpaint_mask_ratios: list[float] = None,
+        pr_win_mul: list[float] = None,
         **kwargs
     ):
         super().__init__()
@@ -112,6 +114,8 @@ class Model2d(nn.Module):
             sigma_distribution=diffusion_sigma_distribution,
             sigma_data=diffusion_sigma_data,
             dynamic_threshold=diffusion_dynamic_threshold,
+            inpaint_mask_ratios=inpaint_mask_ratios,
+            pr_win_mul = pr_win_mul
         )
 
     def forward(self, x: Tensor, **kwargs) -> Tensor:
