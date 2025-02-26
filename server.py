@@ -478,7 +478,7 @@ def print_tensor(unused_addr, *args):
 
     # Save as WAV file
     torchaudio.save("audio.wav", tensor, 44100)
-    print(f"Saved {filename} with shape {tensor.shape} at Hz")
+    print(f"Saved audio.wav with shape {tensor.shape} at 44100 Hz")
 
     # Plot each track in separate subplots
     track_names = ["Bass", "Drums", "Guitar", "Piano"]
