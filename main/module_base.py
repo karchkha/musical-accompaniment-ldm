@@ -2018,7 +2018,7 @@ class ClassCond_Inpaint_2D_TrackSampleLogger(ClassCond_GEN_2D_TrackSampleLogger)
                 total_mask_size = int(mixture_latent.shape[-1] * (self.percentage * self.pr_win_mul))
                 if total_mask_size > 0:
                     start_idx = mixture_latent.shape[-1] - total_mask_size
-                    mixture_latent[:, :, :, start_idx:] = noise[:, :, :, start_idx:]  # Replace with noise
+                    mixture_latent[:, :, :, start_idx:] = 0.0 #noise[:, :, :, start_idx:]  # Replace with noise
 
 
             # Mask part of the image

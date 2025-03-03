@@ -483,29 +483,29 @@ class Diffusion(nn.Module):
         sigmas_padded = sigmas.view(sigmas.shape[0], *([1] * (x.ndim - 1)))
 
         # Add noise to input
-        # noise = default(noise, lambda: torch.randn_like(x))
-        # x_noisy = x + sigmas_padded * noise
+        noise = default(noise, lambda: torch.randn_like(x))
+        x_noisy = x + sigmas_padded * noise
         # Add noise normally if no inpaint mask ratios are given
-        if not self.inpaint_mask_ratios:
-            noise = default(noise, lambda: torch.randn_like(x))
-            x_noisy = x + sigmas_padded * noise
-        else:
+        if self.inpaint_mask_ratios:
+        #     noise = default(noise, lambda: torch.randn_like(x))
+        #     x_noisy = x + sigmas_padded * noise
+        # else:
             # Choose a random mask ratio for each batch item
             mask_ratios = torch.tensor(
                 [random.choice(self.inpaint_mask_ratios) for _ in range(batch)],
                 device=device,
             )
 
-            # Generate the corresponding masks
-            masks = torch.stack([self.create_temporal_mask(x[i], mask_ratios[i]) for i in range(batch)])
+            # # Generate the corresponding masks
+            # masks = torch.stack([self.create_temporal_mask(x[i], mask_ratios[i]) for i in range(batch)])
             
-            # Create noise
-            noise = default(noise, lambda: torch.randn_like(x))
+            # # Create noise
+            # noise = default(noise, lambda: torch.randn_like(x))
 
-            # Apply noise only to the last part of the masked image
-            # x_noisy = x.clone()
-            # x_noisy[~masks] += sigmas_padded[~masks] * noise[~masks]
-            x_noisy = x + (sigmas_padded * noise) * (~masks).float()
+            # # Apply noise only to the last part of the masked image
+            # # x_noisy = x.clone()
+            # # x_noisy[~masks] += sigmas_padded[~masks] * noise[~masks]
+            # x_noisy = x + (sigmas_padded * noise) * (~masks).float()
 
 
             # Apply masking logic to kwargs['mixture']
@@ -519,7 +519,7 @@ class Diffusion(nn.Module):
                     total_mask_size = int(mixture.shape[-1] * (mask_ratio * num_masks))
                     if total_mask_size > 0:
                         start_idx = mixture.shape[-1] - total_mask_size
-                        mixture[i, :, :, start_idx:] = noise[i, :, :, start_idx:]  # Replace with noise
+                        mixture[i, :, :, start_idx:] = 0.0 #noise[i, :, :, start_idx:]  # Replace with noise
 
 
                 kwargs["mixture"] = mixture
@@ -529,6 +529,16 @@ class Diffusion(nn.Module):
 
         # Compute weighted loss
         losses = F.mse_loss(x_denoised, x, reduction="none")
+            
+        # if masks is not None:
+        #     # Compute loss only on the masked regions
+        #     losses = losses * (~masks).float()
+        #     num_masked_elements = (~masks).float().sum(dim=list(range(1, masks.ndim)))  # Sum across all but batch dimension
+        #     losses = losses.sum(dim=list(range(1, losses.ndim))) / (num_masked_elements + 1e-8)  # Avoid div by zero
+        # else:
+        #     # Compute full loss when no masks are applied
+        #     losses = reduce(losses, "b ... -> b", "mean")        
+          
         losses = reduce(losses, "b ... -> b", "mean")
         weigths = self.loss_weight(sigmas)
         losses = losses * weigths
