@@ -248,7 +248,7 @@ def predict(*args):
         
         ## Add pr_win_mul * percentage noise patch to the mixture to make future prediction possible
         start_idx = int(mixture_latent.size(-1)  * (1 - pr_win_mul*percentage))
-        mixture_latent[:, :, :, start_idx:] = noise[:, :, :, start_idx:].clone()
+        mixture_latent[:, :, :, start_idx:] = 0.0 # noise[:, :, :, start_idx:].clone()
                     
         ###########################
 
