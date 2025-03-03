@@ -60,6 +60,8 @@ tensor = torch.full((1, 264600), 0.0)
 
 latent = mask = torch.full((1, 1, 64, 64), 0.0)
 
+generated_audio = torch.full((1, 264600), 0.0)
+
 latent_diffusion = None  ### Network
 MSAProc = None           ### Audio processing
 stems_to_inpaint = []
@@ -278,7 +280,13 @@ def predict(*args):
         latent[:, :, :, start_idx:] = samples[:, :, :, start_idx:].clone()
         
         samples_wav = latent_diffusion.CAE.decode(samples.squeeze(1)).unsqueeze(1)
-        samples_wav = F.pad(samples_wav, (0, config['audio_samples_logger']['length'] - samples_wav.size(-1)), mode="constant", value=0).cpu().numpy()
+        # samples_wav = F.pad(samples_wav, (0, config['audio_samples_logger']['length'] - samples_wav.size(-1)), mode="constant", value=0).cpu().numpy()
+        actual_length = samples_wav.size(-1)
+        samples_wav = samples_wav.cpu().numpy()
+        
+        # Add 2 milliseconds of headroom at the beginning
+        headroom_samples = int(0.02 * config['audio_samples_logger']['sampling_rate'])  # Convert ms to samples
+        fade_in_window = np.linspace(0, 1, headroom_samples)
         
         # Fill the waveforms for stems in stemidx_to_inpaint
         stem_names = ["bass", "drums", "guitar", "piano"]
@@ -293,9 +301,13 @@ def predict(*args):
 
                 # Calculate the range to send (last percentage part)
                 total_length = config['audio_samples_logger']['length']
-                start_idx = int(total_length * (1 - percentage))
-                end_idx = config['audio_samples_logger']['length']
+                start_idx = max(0, int(total_length * (1 - percentage)) - (total_length - actual_length) - headroom_samples)         
+                end_idx = actual_length #config['audio_samples_logger']['length']
 
+                flatten_prediction[start_idx:start_idx + headroom_samples] *= fade_in_window
+                
+                generated_audio[:,start_idx:end_idx] = torch.tensor(flatten_prediction[start_idx:end_idx])   #### this will be deleted
+                
                 # for i in range(0, 163840, package_size):
                 # Send only the percentage part in packages
                 for j in range(start_idx, end_idx, package_size):
@@ -317,14 +329,15 @@ def predict(*args):
                     # Send the bundle
                     client.send(bundle)
 
-                    # time.sleep(0.0000001)
+                    time.sleep(0.0001)
                         
-            client.send_message("/server_predicted", True)
+            # client.send_message("/server_predicted", True)
 
     # Shift tensor data by percentage
     # percentage = config['data']['params']['path']['percentage']
     shift_tensor_data(tensor, percentage)
     shift_tensor_data(latent, percentage)
+    shift_tensor_data(generated_audio, percentage)
 
 
 # Create a queue to hold incoming messages
@@ -480,6 +493,11 @@ def print_tensor(unused_addr, *args):
     torchaudio.save("audio.wav", tensor, 44100)
     print(f"Saved audio.wav with shape {tensor.shape} at 44100 Hz")
 
+    # Save as WAV file
+    torchaudio.save("audio_generated.wav", generated_audio, 44100)
+    print(f"Saved audio.wav with shape {generated_audio.shape} at 44100 Hz")    
+    
+
     # Plot each track in separate subplots
     track_names = ["Bass", "Drums", "Guitar", "Piano"]
     num_tracks = tensor.size(0)
@@ -494,11 +512,30 @@ def print_tensor(unused_addr, *args):
         plt.ylabel("Amplitude")
         plt.grid()
         plt.legend()
-
     # Adjust layout and save the figure
     plt.tight_layout()
     plt.savefig("tensor_plot_subplots.png")
     plt.close()  # Close the figure to free memory
+        
+    # Plot each track in separate subplots
+    track_names = ["Bass", "Drums", "Guitar", "Piano"]
+    num_tracks = generated_audio.size(0)
+
+    plt.figure(figsize=(12, 10))  # Adjust figure size for better readability
+
+    for track_id in range(num_tracks):
+        plt.subplot(num_tracks, 1, track_id + 1)  # Create a subplot for each track
+        plt.plot(generated_audio[track_id].cpu().numpy(), label=track_names[track_id])
+        plt.title(f"{track_names[track_id]} Audio Data")
+        plt.xlabel("Sample Index")
+        plt.ylabel("Amplitude")
+        plt.grid()
+        plt.legend()
+
+    # Adjust layout and save the figure
+    plt.tight_layout()
+    plt.savefig("tensor_plot_subplots_generated.png")
+    plt.close()  # Close the figure to free memory dddd
     
     plt.figure(figsize=(10, 10))  # Adjust figure size for better readability
 
@@ -613,8 +650,8 @@ if __name__ == "__main__":
     ### client
     client_port=str(args.clientport)
     client = udp_client.SimpleUDPClient(args.client_ip, args.clientport)
-    # client = udp_client.SimpleUDPClient("137.110.33.121", args.clientport)
-    print(f"\nWill be comunicating with client on {args.client_ip}:{args.clientport}")
+    client = udp_client.SimpleUDPClient("137.110.39.77", args.clientport)
+    # print(f"\nWill be comunicating with client on {args.client_ip}:{args.clientport}")
     
     # client = udp_client.SimpleUDPClient("127.0.0.1", args.clientport)
     

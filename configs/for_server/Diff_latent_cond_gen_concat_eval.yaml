@@ -129,4 +129,4 @@ trainer:
   num_sanity_val_steps: 0
   
 
-resume_from_checkpoint: lightning_logs/GEN_diffusion_model/2025-02-02T00-06-03__Diffusion_AudioLDM_concat_mix_P=1.2_1.2_attn-8_16_32/checkpoints/epoch=214-valid_loss=0.4414.ckpt
+resume_from_checkpoint: lightning_logs/GEN_diffusion_model/2025-03-01T06-07-38__Diffusion_AudioLDM_concat_mix_P=1.2_1.2_attn-8_16_32_train_masked_0_0.125_0.25/checkpoints/last.ckpt #lightning_logs/GEN_diffusion_model/2025-02-02T00-06-03__Diffusion_AudioLDM_concat_mix_P=1.2_1.2_attn-8_16_32/checkpoints/epoch=214-valid_loss=0.4414.ckpt
