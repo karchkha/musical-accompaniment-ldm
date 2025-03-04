@@ -115,23 +115,29 @@ def create_model_and_diffusion_audio(args, feature_extractor=None, discriminator
     schedule_sampler = create_named_schedule_sampler(args.diffusion, args.diffusion.schedule_sampler, args.diffusion.start_scales)
     diffusion_schedule_sampler = create_named_schedule_sampler(args.diffusion, args.diffusion.diffusion_schedule_sampler, args.diffusion.start_scales)
 
+    UNet = "OpenAIUNetModel" if getattr(args, 'unet_type', None) == 'openAI' else "SongUNet"
+    # Extract model parameters while ensuring no conflicts with explicitly passed ones
+    model_kwargs = {k: v for k, v in vars(args.model).items() if k not in {
+        "class_cond", "concat"
+    }}
 
     # This will work only for "cifar10" other part of the code is removed for simplicity!! 
-    model = EDMPrecond_Audio_CTM(
-                            # img_resolution=args.data.img_resolution, 
-                        #    img_channels=args.data.img_channels,
-                            args.model,
-                            label_dim= 4, 
+    model = EDMPrecond_CTM(
+                            # img_resolution=args.model.img_resolution,  
+                            # img_channels=args.model.out_channels,
+                            # args.model,
+                            # label_dim= args.model.label_dim, 
                             use_fp16= args.diffusion.use_fp16,
-                            sigma_min=args.diffusion.sigma_min, 
-                            sigma_max=args.diffusion.sigma_max,
-                            sigma_data=args.diffusion.sigma_data,
-                            model_type='UNet1d',
+                            # sigma_min=args.diffusion.sigma_min, 
+                            # sigma_max=args.diffusion.sigma_max,
+                            # sigma_data=args.diffusion.sigma_data,
+                            model_type=UNet,
                             teacher=teacher, 
-                            teacher_model_path=args.diffusion.teacher_model_path or args.diffusion.model_path,
+                            # teacher_model_path=args.diffusion.teacher_model_path or args.diffusion.model_path,
                             training_mode=args.diffusion.training_mode, 
-                            arch='ddpmpp',
-                            linear_probing=args.diffusion.linear_probing
+                            # arch='ddpmpp',
+                            linear_probing=args.diffusion.linear_probing,
+                            **model_kwargs
                             )
 
     diffusion = KarrasDenoiser(

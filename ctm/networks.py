@@ -813,56 +813,50 @@ class EDMPrecond(torch.nn.Module):
 # Improved preconditioning proposed in the paper "Elucidating the Design
 # Space of Diffusion-Based Generative Models" (EDM).
 
+class _2DUnetWrapper(torch.nn.Module):
+    def __init__(self, model_type='UNet1d', training_mode='', linear_probing=False, **kwargs):
+        super().__init__()
+
+        # # Ensure in_channels and out_channels exist, defaulting to img_channels if missing
+        img_resolution = kwargs.pop('img_resolution', 0)
+        in_channels = kwargs.pop('in_channels', 1)
+        out_channels = kwargs.pop('out_channels', 1)
+        
+        # Initialize the underlying model
+        self.unet = globals()[model_type](img_resolution = img_resolution, in_channels = in_channels,  out_channels = out_channels, **kwargs, training_mode = training_mode, linear_probing=linear_probing)
+
+    def forward(self, *args, **kwargs):
+        return self.unet(*args, **kwargs)
+
+
 @persistence.persistent_class
 class EDMPrecond_CTM(torch.nn.Module):
     def __init__(self,
-        img_resolution,                     # Image resolution.
-        img_channels,                       # Number of color channels.
-        label_dim       = 0,                # Number of class labels, 0 = unconditional.
+        # img_resolution,                     # Image resolution.
+        # img_channels,                       # Number of color channels.
+        # label_dim       = 0,                # Number of class labels, 0 = unconditional.
         use_fp16        = False,            # Execute the underlying model at FP16 precision?
-        sigma_min       = 0,                # Minimum supported noise level.
-        sigma_max       = float('inf'),     # Maximum supported noise level.
-        sigma_data      = 0.5,              # Expected standard deviation of the training data.
+        # sigma_min       = 0,                # Minimum supported noise level.
+        # sigma_max       = float('inf'),     # Maximum supported noise level.
+        # sigma_data      = 0.5,              # Expected standard deviation of the training data.
         model_type      = 'SongUNet',       # Class name of the underlying model.
         teacher = False,
-        teacher_model_path = '',
+        # teacher_model_path = '',
         training_mode = '',
-        arch='ncsn',
+        # arch='ncsn',
         linear_probing=False,
         **model_kwargs,                     # Keyword arguments for the underlying model.
     ):
         super().__init__()
         self.teacher = teacher
-        self.img_resolution = img_resolution
-        self.img_channels = img_channels
-        self.label_dim = label_dim
+
         self.use_fp16 = use_fp16
-        self.sigma_min = sigma_min
-        self.sigma_max = sigma_max
-        self.sigma_data = sigma_data
-        self.eye = torch.eye(self.label_dim)
+
         if teacher:
-            import pickle
-            print(f'Loading network from "{teacher_model_path}"...')
-            with open(teacher_model_path, 'rb') as f:
-                self.model = pickle.load(f)['ema']
+            self.model = _2DUnetWrapper(**model_kwargs, model_type=model_type)
         else:
-            if arch in ['ddpmpp', 'ncsnpp']:
-                resample_filter = [1,1] if arch == 'ddpmpp' else [1,3,3,1]
-                channel_mult_noise = 1 if arch == 'ddpmpp' else 2
-                encoder_type = 'standard' if arch == 'ddpmpp' else 'residual'
-                embedding_type = 'positional' if arch == 'ddpmpp' else 'fourier'
-                self.model = globals()[model_type](img_resolution=img_resolution, in_channels=img_channels,
-                                                   out_channels=img_channels, label_dim=label_dim,
-                                                   training_mode=training_mode, resample_filter=resample_filter,
-                                                   channel_mult_noise=channel_mult_noise, encoder_type=encoder_type,
-                                                   embedding_type=embedding_type, linear_probing=linear_probing,
-                                                   **model_kwargs)
-            else:
-                self.model = globals()[model_type](img_resolution=img_resolution, in_channels=img_channels,
-                                                   out_channels=img_channels, label_dim=label_dim,
-                                                   training_mode=training_mode, linear_probing=linear_probing,
-                                                   **model_kwargs)
+            self.model = _2DUnetWrapper(**model_kwargs, model_type=model_type, training_mode=training_mode, linear_probing=linear_probing)
+
 
     def get_c_in(self, sigma):
         return 1 / (sigma**2 + self.sigma_data**2) ** 0.5
@@ -872,27 +866,28 @@ class EDMPrecond_CTM(torch.nn.Module):
 
     def forward(self, rescaled_x, rescaled_t, s=None, teacher=False, **model_kwargs):
         # Ensure self.eye is on the same device as rescaled_x
-        self.eye = self.eye.to(rescaled_x.device)
+        # self.eye = self.eye.to(rescaled_x.device)
         
-        class_labels = None if self.label_dim == 0 else torch.zeros([1, self.label_dim], device=rescaled_x.device) \
-            if model_kwargs == {} else self.eye[model_kwargs['y']].reshape(-1, self.label_dim)
+        # class_labels = None if self.label_dim == 0 else torch.zeros([1, self.label_dim], device=rescaled_x.device) \
+        #     if model_kwargs == {} else self.eye[model_kwargs['y']].reshape(-1, self.label_dim)
         dtype = torch.float16 if self.use_fp16 and rescaled_x.device.type == 'cuda' else torch.float32
         if self.teacher:
             #with torch.no_grad():
             sigma = self.unrescaling_t(rescaled_t)
-            c_in = append_dims(self.get_c_in(sigma), rescaled_x.ndim)
-            x = rescaled_x / c_in
-            D_x = self.model(x.to(dtype), sigma.flatten(), class_labels=class_labels)
-            c_skip = append_dims(self.sigma_data ** 2 / (sigma ** 2 + self.sigma_data ** 2), rescaled_x.ndim)
-            c_out = append_dims(sigma * self.sigma_data / (sigma ** 2 + self.sigma_data ** 2).sqrt(), rescaled_x.ndim)
-            F_x = (D_x - c_skip * x) / c_out
+            sigma = sigma.log() / 4
+            # c_in = append_dims(self.get_c_in(sigma), rescaled_x.ndim)
+            x = rescaled_x #/ c_in
+            D_x = self.model(x.to(dtype), sigma.flatten(), noise_labels_s = None, **model_kwargs)
+            # c_skip = append_dims(self.sigma_data ** 2 / (sigma ** 2 + self.sigma_data ** 2), rescaled_x.ndim)
+            # c_out = append_dims(sigma * self.sigma_data / (sigma ** 2 + self.sigma_data ** 2).sqrt(), rescaled_x.ndim)
+            F_x = D_x #(D_x - c_skip * x) / c_out
         else:
             t = self.unrescaling_t(rescaled_t)
             t = t.log() / 4
             if s != None:
                 s = self.unrescaling_t(s)
                 s = s.log() / 4
-            F_x = self.model(rescaled_x.to(dtype), t.flatten(), None if s == None else s.flatten(), class_labels=class_labels)
+            F_x = self.model(rescaled_x.to(dtype), t.flatten(), None if s == None else s.flatten(), **model_kwargs)
         #assert F_x.dtype == dtype
         return F_x
 
@@ -960,31 +955,10 @@ class EDMPrecond_Audio_CTM(torch.nn.Module):
         self.eye = torch.eye(self.label_dim)
         if teacher:
             self.model = UnetWrapper(**vars(cfg), model_type=model_type)
-        #     import pickle
-        #     print(f'Loading network from "{teacher_model_path}"...')
-        #     with open(teacher_model_path, 'rb') as f:
-        #         self.model = pickle.load(f)['ema']
+
         else:
             self.model = UnetWrapper(**vars(cfg), model_type=model_type, training_mode=training_mode, linear_probing=linear_probing)
-        #     # if arch in ['ddpmpp', 'ncsnpp']:
-        #     #     # resample_filter = [1,1] if arch == 'ddpmpp' else [1,3,3,1]
-        #     #     # channel_mult_noise = 1 if arch == 'ddpmpp' else 2
-        #     #     # encoder_type = 'standard' if arch == 'ddpmpp' else 'residual'
-        #     #     # embedding_type = 'positional' if arch == 'ddpmpp' else 'fourier'
-        #     #     self.model = globals()[model_type](img_resolution=img_resolution, in_channels=img_channels,
-        #     #                                        out_channels=img_channels, label_dim=label_dim,
-        #     #                                        training_mode=training_mode, resample_filter=resample_filter,
-        #     #                                        channel_mult_noise=channel_mult_noise, encoder_type=encoder_type,
-        #     #                                        embedding_type=embedding_type, linear_probing=linear_probing,
-        #     #                                        **model_kwargs)
-        #     # else:
-        #     #     self.model = globals()[model_type](img_resolution=img_resolution, in_channels=img_channels,
-        #     #                                        out_channels=img_channels, label_dim=label_dim,
-        #     #                                        training_mode=training_mode, linear_probing=linear_probing,
-        #     #                                        **model_kwargs)
-        # model = globals()[model_type](**vars(cfg))
-        # self.model = UnetWrapper(model)
-        # Initialize the UnetWrapper with the config and model_type
+
 
     def get_c_in(self, sigma):
         return 1 / (sigma**2 + self.sigma_data**2) ** 0.5
