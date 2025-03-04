@@ -66,6 +66,13 @@ def karras_sample(
 
     if x_T == None:
         x_T = generator.randn(*shape, device=device) * sigma_max
+        
+    # Initialize masking and initial data point for inpainting if given:
+    source = model_kwargs.pop("source", None)
+    mask = model_kwargs.pop("mask", None)
+        
+    source = th.zeros_like(x_T, dtype=th.float32) if source is None else source
+    mask = th.zeros_like(x_T, dtype=th.float32) if mask is None else mask
 
     sample_fn = {
         "heun": sample_heun,
@@ -105,6 +112,10 @@ def karras_sample(
         sampler_args['ctm'] = ctm
     #print("clip_denoised, clip_output: ", clip_denoised, clip_output)
     def denoiser(x_t, t, s=th.ones(x_T.shape[0], device=device)):
+        
+        noisy_source = source + t.view(-1, 1, 1, 1)*th.randn_like(source)
+        x_t = mask*noisy_source + (1.0 - mask)*x_t
+             
         denoised, G_theta = diffusion.get_denoised_and_G(model, x_t, t, s, ctm, teacher, **model_kwargs)
         if sampler in ['exact', 'cm_multistep', "cm_multistep_cd", 'onestep', 'gamma_multistep', 'gamma']:
             denoised = G_theta
@@ -127,7 +138,8 @@ def karras_sample(
     if clip_output:
         #print("clip output")
         return x_0.clamp(-1, 1)
-    return x_0
+    # return x_0
+    return source * mask + x_0 * (1.0 - mask)
 
 
 def get_sigmas_karras(n, sigma_min, sigma_max, rho=7.0, device="cpu"):

@@ -1733,7 +1733,7 @@ class ClassCond_inpaint_GEN_2D_TrackSampleLoggerCTM(ClassCond_GEN_2D_TrackSample
         """
         _, _, F, T = like.shape  # Batch, Channels, Frequency, Time
         device = like.device
-        mask = torch.ones_like(like, dtype=torch.bool)
+        mask = torch.ones_like(like) #, dtype=torch.bool)
 
         # Compute time range to mask (masking the last portion)
         t_mask = int(T * mask_ratio)  # Number of time steps to mask
@@ -1781,17 +1781,13 @@ class ClassCond_inpaint_GEN_2D_TrackSampleLoggerCTM(ClassCond_GEN_2D_TrackSample
             model_kwargs["augment_labels"]= embedding
             model_kwargs["mixture"] = mixture_latent
 
-###########################################################################################################################
-###########################################################################################################################
-            #: TODO need to make masking here
             # Mask part of the image
-            # inpaint = latent.clone()  # Extract corresponding category image
-            # inpaint_mask = self.create_temporal_mask(like=noise, mask_ratio=self.percentage)
+            source = latent.clone()  # take corresponding category image
+            mask = self.create_temporal_mask(like=source, mask_ratio=self.percentage)
             
-            # Inject noise in the masked area
-            # inpaint = torch.where(inpaint_mask, inpaint, noise.to(inpaint.dtype))
-###########################################################################################################################
-###########################################################################################################################
+            # sneak source and mask into the sampler trough model_kwargs
+            model_kwargs["source"] = source
+            model_kwargs["mask"]= mask
 
             # Sample from the model using the noise and the current one-hot features
             xh = self.sampling(model=pl_module, sampler=sampler, teacher= True if prefix == "teacher_model" else False, prefix=prefix, step=steps, num_samples=1, batch_size=batch_size, ctm=True if pl_module.cfg.diffusion.training_mode=="ctm" and prefix != "teacher_model" else False, **model_kwargs) # class_idx = None, features = current_features, channels_list = channels_list, embedding = None)
