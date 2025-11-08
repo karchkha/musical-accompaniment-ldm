@@ -188,6 +188,7 @@ def load_network(unused_addr):
     cfg = dict2namespace(config)
     
     model = Audio_CTM_Model(cfg)
+    print("\nStarted CD model!")
 
     # Ensure checkpoint path is defined
     checkpoint_path = cfg.resume_from_checkpoint
@@ -247,7 +248,7 @@ def predict(*args):
     global latent_diffusion, tensor, waveforms, stems_to_inpaint, stemidx_to_inpaint, steps, batch, MSAProc, package_size, percentage, config, diffusion_sampler, diffusion_schedule, z, config, latent, CAE
 
     timer.record_event("\nStart pred. function")  # First event
-    
+
     with torch.no_grad():
 
        # Create a zero-initialized feature tensor for batch size 1
@@ -306,8 +307,8 @@ def predict(*args):
         start_idx = int(samples.size(-1)  * (1 - percentage))
         latent[:, :, :, start_idx:] = samples[:, :, :, start_idx:].clone()
         
-        # samples_wav = CAE.decode(samples.squeeze(1)).unsqueeze(1)
-        samples_wav = CAE.decode(samples[:, :, :, start_idx-1:].squeeze(1)).unsqueeze(1)
+        samples_wav = CAE.decode(samples.squeeze(1)).unsqueeze(1)
+        # samples_wav = CAE.decode(samples[:, :, :, start_idx-1:].squeeze(1)).unsqueeze(1)
         
         
         timer.record_event("Converted to wav")  # First event

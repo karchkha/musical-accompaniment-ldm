@@ -89,6 +89,29 @@ waveforms = {
     "piano": None
 }
 
+
+class EventTimer:
+    def __init__(self):
+        self.checkpoints = []
+
+    def record_event(self, event_name="Event"):
+        """Records the event with the current timestamp and reports time difference from the previous event."""
+        current_time = time.time()
+        if self.checkpoints:
+            prev_time = self.checkpoints[-1][1]
+            time_diff = current_time - prev_time
+            print(f"{event_name}: {time_diff:.4f} Sec")
+        else:
+            print(f"{event_name} recorded. This is the first event.")
+        self.checkpoints.append((event_name, current_time))
+
+    def get_intervals(self):
+        """Returns a list of time intervals between consecutive events."""
+        return [(self.checkpoints[i][0], self.checkpoints[i][1] - self.checkpoints[i - 1][1])
+                for i in range(1, len(self.checkpoints))]
+
+timer = EventTimer()
+
 # # Function to process a single OSC message in a separate thread
 # def process_message(track_id, start_index, values):
 #     global tensor
@@ -198,7 +221,7 @@ def load_network(unused_addr):
     latent = latent_diffusion.CAE.encode(tensor).unsqueeze(1) 
 
     # client.send_message("/ready", True)
-    print()
+    print("Model is ready!")
 
 #########################################################################
 
@@ -229,6 +252,7 @@ def predict(*args):
     global latent_diffusion, tensor, waveforms, stems_to_inpaint, stemidx_to_inpaint, steps, batch, MSAProc, package_size, percentage, config, diffusion_sampler, diffusion_schedule, z, config, latent
     
     # batch = MSAProc.fill_batch_from_audio(tensor, batch)
+    timer.record_event("\nStart pred. function")  # First event
 
     with torch.no_grad():
 
@@ -248,6 +272,8 @@ def predict(*args):
   
         mixture_latent = latent_diffusion.CAE.encode(tensor).unsqueeze(1)
         
+        timer.record_event("Calculated Mixrute latent")  # First event
+        
         ## Add pr_win_mul * percentage noise patch to the mixture to make future prediction possible
         start_idx = int(mixture_latent.size(-1)  * (1 - pr_win_mul*percentage))
         mixture_latent[:, :, :, start_idx:] = 0.0 # noise[:, :, :, start_idx:].clone()
@@ -258,6 +284,8 @@ def predict(*args):
         inpaint = latent.clone()
         # Inject noise in the masked area
         inpaint = torch.where(mask, inpaint, noise.to(inpaint.dtype))
+        
+        timer.record_event("Entering the Sampler")  # First event
 
         # Inpaint from the model using the noise and the current one-hot features
         samples = latent_diffusion.model.inpaint(
@@ -274,12 +302,15 @@ def predict(*args):
             # channels_list=channels_list,
             # mixture_features_channels_list=mixture_features_channels_list,
         )
+        timer.record_event("Done Sampling")  # First event
         
         # update latet vectro for future inpainting
         start_idx = int(samples.size(-1)  * (1 - percentage))
         latent[:, :, :, start_idx:] = samples[:, :, :, start_idx:].clone()
         
         samples_wav = latent_diffusion.CAE.decode(samples.squeeze(1)).unsqueeze(1)
+        timer.record_event("Converted to wav")  # First event
+        
         # samples_wav = F.pad(samples_wav, (0, config['audio_samples_logger']['length'] - samples_wav.size(-1)), mode="constant", value=0).cpu().numpy()
         actual_length = samples_wav.size(-1)
         samples_wav = samples_wav.cpu().numpy()
@@ -287,6 +318,8 @@ def predict(*args):
         # Add 2 milliseconds of headroom at the beginning
         headroom_samples = int(0.02 * config['audio_samples_logger']['sampling_rate'])  # Convert ms to samples
         fade_in_window = np.linspace(0, 1, headroom_samples)
+        
+        timer.record_event("Starting sending")  # First event
         
         # Fill the waveforms for stems in stemidx_to_inpaint
         stem_names = ["bass", "drums", "guitar", "piano"]
@@ -329,9 +362,11 @@ def predict(*args):
                     # Send the bundle
                     client.send(bundle)
 
-                    time.sleep(0.0001)
+                    # time.sleep(0.0001)
+     
+    timer.record_event("Done sending")  # First event
                         
-            # client.send_message("/server_predicted", True)
+    client.send_message("/server_predicted", True)
 
     # Shift tensor data by percentage
     # percentage = config['data']['params']['path']['percentage']
@@ -339,7 +374,8 @@ def predict(*args):
     shift_tensor_data(latent, percentage)
     shift_tensor_data(generated_audio, percentage)
 
-
+    timer.record_event("Done shifting")  # First event
+    
 # Create a queue to hold incoming messages
 message_queue = Queue()
 
