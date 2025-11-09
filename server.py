@@ -691,7 +691,7 @@ if __name__ == "__main__":
     
     # client = udp_client.SimpleUDPClient("127.0.0.1", args.clientport)
     
-    # client.send_message("/ready", True)
+    client.send_message("/ready", True)
 
     # Start the server
     start_server(args.server_ip, args.serverport)
