@@ -82,7 +82,7 @@ audio_samples_logger:
   img_resolution: 64
   sampling_rate: 44100
   length: 264600
-  sampling_steps: 10
+  sampling_steps: 5
   stems: ['bass', 'drums', 'guitar', 'piano']
   percentage: 0.25
 
@@ -97,7 +97,7 @@ diffusion_sampler:
 diffusion_schedule:
   _target_: audio_diffusion_pytorch_.KarrasSchedule
   sigma_min: 0.0001
-  sigma_max: 80.0
+  sigma_max: 50 #80.0
   rho: 9.0
 
 
