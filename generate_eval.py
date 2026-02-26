@@ -16,16 +16,20 @@ Usage:
 """
 
 import argparse
+import glob
 import importlib
 import json
 import os
 from pathlib import Path
 
+import numpy as np
 import torch
 import torchaudio
 import yaml
 from tqdm import tqdm
 
+
+EVAL_SAMPLE_RATE = 16000  # target SR for COCOLA / FAD
 
 # ---------------------------------------------------------------------------
 # Utility functions (adapted from server.py)
@@ -445,46 +449,151 @@ def parse_args():
                         help="Limit song duration in seconds (for debugging)")
     parser.add_argument("--hot_start", action="store_true",
                         help="Initialize first window with GT stem latent")
+
+    # --- evaluation flags (mirrors stream-music-gen gen_and_evaluate.py) ---
+    parser.add_argument("--skip_generation", action="store_true",
+                        help="Skip generation, run evaluation only on existing output_dir")
+    parser.add_argument("--skip_resampling", action="store_true",
+                        help="Skip resampling to 16 kHz (assumes already done)")
+    parser.add_argument("--skip_beat_alignment", action="store_true",
+                        help="Skip beat alignment score calculation")
+    parser.add_argument("--skip_cocola", action="store_true",
+                        help="Skip COCOLA score calculation")
+    parser.add_argument("--skip_fad", action="store_true",
+                        help="Skip FAD calculation")
+    parser.add_argument("--sub_fad", action="store_true",
+                        help="Evaluate FAD on mixes instead of stems")
+    parser.add_argument("--results_save_dir", type=str,
+                        default="lightning_logs/eval_results",
+                        help="Directory to save evaluation results JSON")
+    parser.add_argument("--generation_only", action="store_true",
+                        help="Only generate audio, skip evaluation")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
 
-    print(f"Config: {args.config}")
-    print(f"r={args.r}, w={args.w} (pr_win_mul={args.w + 1})")
-    print(f"Stems: {args.stems}")
-    print(f"Device: {args.device}")
-    print(f"Output: {args.output_dir}")
-
-    # Load model
-    model, sampler, schedule, sampling_steps, config = load_model(
-        args.config, args.checkpoint, args.device
-    )
-
-    # List test tracks
-    test_dir = Path(args.test_data_dir)
-    track_dirs = sorted([d for d in test_dir.iterdir() if d.is_dir()])
-    if args.num_samples is not None:
-        track_dirs = track_dirs[:args.num_samples]
-
-    print(f"Test tracks: {len(track_dirs)}")
-    print(f"Sampling steps: {sampling_steps}")
-
     output_base = Path(args.output_dir)
-    output_base.mkdir(parents=True, exist_ok=True)
 
-    sample_counter = 0
-    for track_dir in tqdm(track_dirs, desc="Tracks"):
-        sample_counter = process_track(
-            track_dir, model, sampler, schedule,
-            args.stems, args.r, args.w, sampling_steps,
-            output_base, sample_counter, args.device,
-            max_duration=args.max_duration,
-            hot_start=args.hot_start
+    # -----------------------------------------------------------------------
+    # Generation
+    # -----------------------------------------------------------------------
+    if not args.skip_generation:
+        print(f"Config: {args.config}")
+        print(f"r={args.r}, w={args.w} (pr_win_mul={args.w + 1})")
+        print(f"Stems: {args.stems}")
+        print(f"Device: {args.device}")
+        print(f"Output: {args.output_dir}")
+
+        model, sampler, schedule, sampling_steps, _ = load_model(
+            args.config, args.checkpoint, args.device
         )
 
-    print(f"\nDone! Generated {sample_counter} samples in {output_base}")
+        test_dir = Path(args.test_data_dir)
+        track_dirs = sorted([d for d in test_dir.iterdir() if d.is_dir()])
+        if args.num_samples is not None:
+            track_dirs = track_dirs[:args.num_samples]
+
+        print(f"Test tracks: {len(track_dirs)}")
+        print(f"Sampling steps: {sampling_steps}")
+
+        output_base.mkdir(parents=True, exist_ok=True)
+
+        sample_counter = 0
+        for track_dir in tqdm(track_dirs, desc="Tracks"):
+            sample_counter = process_track(
+                track_dir, model, sampler, schedule,
+                args.stems, args.r, args.w, sampling_steps,
+                output_base, sample_counter, args.device,
+                max_duration=args.max_duration,
+                hot_start=args.hot_start
+            )
+
+        print(f"\nDone! Generated {sample_counter} samples in {output_base}")
+
+    if args.generation_only:
+        return
+
+    # -----------------------------------------------------------------------
+    # Evaluation
+    # -----------------------------------------------------------------------
+    from main.eval import eval_utils
+    from main.eval.beat_alignment_eval import beat_alignment_score
+    import main.eval.cocola_eval as cocola_eval
+    import main.eval.fad_eval as fad_eval
+
+    results = {}
+    root_folder = str(output_base / "model_predictions")
+
+    if not args.skip_resampling:
+        print("\nResampling audio to 16 kHz...")
+        files_to_resample = glob.glob(
+            os.path.join(root_folder, "**", "*.wav"), recursive=True
+        )
+        # exclude already-resampled files
+        files_to_resample = [f for f in files_to_resample
+                             if f"_{EVAL_SAMPLE_RATE}.wav" not in f]
+        eval_utils.load_resample_save(files_to_resample, SR, EVAL_SAMPLE_RATE)
+
+    if not args.skip_beat_alignment:
+        print("\nComputing beat alignment...")
+        all_gt_scores, all_pred_scores = beat_alignment_score(
+            root_folder,
+            context_path="input_audio.wav",
+            gt_path="ground_truth/pred.wav",
+            pred_path="pred/pred.wav",
+        )
+        f_key = "madmom_fmeasure"
+        if f_key in all_gt_scores:
+            gt_f = all_gt_scores[f_key]
+            pred_f = all_pred_scores[f_key]
+            results["beat_alignment"] = {
+                "gt_f_measure":   {"mean": float(np.mean(gt_f)),   "std": float(np.std(gt_f))},
+                "pred_f_measure": {"mean": float(np.mean(pred_f)), "std": float(np.std(pred_f))},
+            }
+            print(f"GT F-Measure:   mean={np.mean(gt_f):.4f}  std={np.std(gt_f):.4f}")
+            print(f"Pred F-Measure: mean={np.mean(pred_f):.4f}  std={np.std(pred_f):.4f}")
+
+    if not args.skip_cocola:
+        print("\nComputing COCOLA...")
+        embedding_modes = ["both", "harmonic", "percussive"]
+        gt_scores, pred_scores = cocola_eval.cocola_score(
+            root_folder,
+            context_path=f"input_audio_{EVAL_SAMPLE_RATE}.wav",
+            gt_path=f"ground_truth/pred_{EVAL_SAMPLE_RATE}.wav",
+            pred_path=f"pred/pred_{EVAL_SAMPLE_RATE}.wav",
+            embedding_modes=embedding_modes,
+        )
+        results["cocola"] = {}
+        for mode in embedding_modes:
+            gt_m, pred_m = gt_scores[mode], pred_scores[mode]
+            results["cocola"][mode] = {
+                "gt_scores":   {"mean": float(np.mean(gt_m)), "std": float(np.std(gt_m))},
+                "pred_scores": {"mean": float(np.mean(pred_m)), "std": float(np.std(pred_m))},
+            }
+            print(f"COCOLA [{mode}]: GT={np.mean(gt_m):.4f}  Pred={np.mean(pred_m):.4f}")
+
+    if not args.skip_fad:
+        print("\nComputing FAD...")
+        if args.sub_fad:
+            gt_path   = f"ground_truth/mix_{EVAL_SAMPLE_RATE}.wav"
+            gen_path  = f"pred/mix_{EVAL_SAMPLE_RATE}.wav"
+        else:
+            gt_path   = f"ground_truth/pred_{EVAL_SAMPLE_RATE}.wav"
+            gen_path  = f"pred/pred_{EVAL_SAMPLE_RATE}.wav"
+        fad_score = fad_eval.calculate_fad(root_folder, gt_path=gt_path,
+                                           gen_path=gen_path, metric="vggish")
+        results["fad"] = {"score": float(fad_score)}
+        print(f"FAD: {fad_score:.4f}")
+
+    # Save results
+    os.makedirs(args.results_save_dir, exist_ok=True)
+    run_name = Path(args.output_dir).name
+    results_file = os.path.join(args.results_save_dir, f"{run_name}.json")
+    with open(results_file, "w") as f:
+        json.dump(results, f, indent=2)
+    print(f"\nResults saved to: {results_file}")
 
 
 if __name__ == "__main__":
