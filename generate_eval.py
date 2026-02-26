@@ -120,7 +120,7 @@ def load_model(config_path, checkpoint_path, device):
 
 @torch.no_grad()
 def generate_stem(model, sampler, schedule, mixture_audio, stem_idx, r, w,
-                  num_steps, device):
+                  num_steps, device, hot_start=False, gt_audio=None):
     """
     Sliding-window inpainting generation of a single stem for a full song.
 
@@ -128,12 +128,14 @@ def generate_stem(model, sampler, schedule, mixture_audio, stem_idx, r, w,
         model: Audio_LDM_Model (on device, eval mode)
         sampler: diffusion sampler (e.g. ADPM2Sampler)
         schedule: sigma schedule (e.g. KarrasSchedule)
-        mixture_audio: (L,) tensor of full mixture waveform
+        mixture_audio: (L,) tensor of full context/accompaniment waveform
         stem_idx: 0=bass, 1=drums, 2=guitar, 3=piano
         r: step ratio (e.g. 0.25)
         w: look-ahead depth (-1=offline, 0=sync, 1=look-ahead)
         num_steps: diffusion sampling steps
         device: torch device string
+        hot_start: if True, initialize latent buffer with GT stem for first window
+        gt_audio: (L,) tensor of ground truth stem (required for hot_start)
 
     Returns:
         (generated_length,) tensor of generated stem waveform
@@ -156,12 +158,21 @@ def generate_stem(model, sampler, schedule, mixture_audio, stem_idx, r, w,
 
     generated_chunks = []
 
+    if hot_start:
+        # Hot start: seed latent buffer with GT stem's first window
+        gt_window = gt_audio[:T_SAMPLES].clone()
+        if gt_window.shape[0] < T_SAMPLES:
+            gt_window = torch.nn.functional.pad(gt_window, (0, T_SAMPLES - gt_window.shape[0]))
+        latent_buffer = model.CAE.encode(gt_window.unsqueeze(0).to(device)).unsqueeze(1)
+        # Prepend GT context (the first (1-r)*T that won't be generated)
+        context_samples = T_SAMPLES - step_samples
+        generated_chunks.append(gt_audio[:context_samples].cpu())
+
     for step_i in tqdm(range(n_steps), desc=f"  {STEM_NAMES[stem_idx]}", leave=False):
         # 1. Slice mixture audio for this window
         audio_start = step_i * step_samples
         audio_end = audio_start + T_SAMPLES
         if audio_end > L:
-            # Pad with zeros if we overshoot
             chunk = torch.zeros(T_SAMPLES)
             valid = L - audio_start
             chunk[:valid] = mixture_audio[audio_start:L]
@@ -177,39 +188,68 @@ def generate_stem(model, sampler, schedule, mixture_audio, stem_idx, r, w,
             zero_start = max(0, int(LATENT_SIZE * (1 - pr_win_mul * r)))
             mixture_latent[:, :, :, zero_start:] = 0.0
 
-        # 4. Create inpaint input: context from latent_buffer, noise in masked region
-        noise = torch.randn(1, 1, LATENT_SIZE, LATENT_SIZE, device=device)
-        inpaint = torch.where(mask, latent_buffer, noise)
+        if not hot_start and step_i == 0:
+            # Cold start first step: no valid context, generate full window
+            full_mask = torch.zeros_like(latent_buffer, dtype=torch.bool).to(device)
+            noise = torch.randn(1, 1, LATENT_SIZE, LATENT_SIZE, device=device)
 
-        # 5. Run diffusion inpainting
-        samples = model.model.inpaint(
-            inpaint=inpaint,
-            inpaint_mask=mask,
-            noise_labels_s=None,
-            sampler=sampler,
-            sigma_schedule=schedule,
-            num_steps=num_steps,
-            class_labels=features,
-            augment_labels=None,
-            mixture=mixture_latent,
-        )
-
-        # 6. Update latent buffer with generated region
-        gen_start = int(LATENT_SIZE * (1 - r))
-        latent_buffer[:, :, :, gen_start:] = samples[:, :, :, gen_start:].clone()
-
-        # 7. Decode to audio and extract the newly generated chunk
-        samples_wav = model.CAE.decode(samples.squeeze(1))  # (1, ~263680)
-        # Pad to T_SAMPLES if decoder output is shorter (Music2Latent returns 263680)
-        if samples_wav.shape[-1] < T_SAMPLES:
-            samples_wav = torch.nn.functional.pad(
-                samples_wav, (0, T_SAMPLES - samples_wav.shape[-1])
+            samples = model.model.inpaint(
+                inpaint=noise,
+                inpaint_mask=full_mask,
+                noise_labels_s=None,
+                sampler=sampler,
+                sigma_schedule=schedule,
+                num_steps=num_steps,
+                class_labels=features,
+                augment_labels=None,
+                mixture=mixture_latent,
             )
-        audio_chunk = samples_wav[0, T_SAMPLES - step_samples:T_SAMPLES].cpu()
-        generated_chunks.append(audio_chunk)
 
-        # 8. Shift latent buffer for next step
-        shift_tensor_data(latent_buffer, r)
+            # Keep full latent as context for next steps
+            latent_buffer = samples.clone()
+
+            # Decode and keep full window audio
+            samples_wav = model.CAE.decode(samples.squeeze(1))
+            if samples_wav.shape[-1] < T_SAMPLES:
+                samples_wav = torch.nn.functional.pad(
+                    samples_wav, (0, T_SAMPLES - samples_wav.shape[-1])
+                )
+            generated_chunks.append(samples_wav[0, :T_SAMPLES].cpu())
+
+            # Shift for next step
+            shift_tensor_data(latent_buffer, r)
+        else:
+            # Normal inpainting step
+            noise = torch.randn(1, 1, LATENT_SIZE, LATENT_SIZE, device=device)
+            inpaint = torch.where(mask, latent_buffer, noise)
+
+            samples = model.model.inpaint(
+                inpaint=inpaint,
+                inpaint_mask=mask,
+                noise_labels_s=None,
+                sampler=sampler,
+                sigma_schedule=schedule,
+                num_steps=num_steps,
+                class_labels=features,
+                augment_labels=None,
+                mixture=mixture_latent,
+            )
+
+            # Update latent buffer with generated region
+            gen_start = int(LATENT_SIZE * (1 - r))
+            latent_buffer[:, :, :, gen_start:] = samples[:, :, :, gen_start:].clone()
+
+            # Decode and extract the newly generated chunk
+            samples_wav = model.CAE.decode(samples.squeeze(1))
+            if samples_wav.shape[-1] < T_SAMPLES:
+                samples_wav = torch.nn.functional.pad(
+                    samples_wav, (0, T_SAMPLES - samples_wav.shape[-1])
+                )
+            audio_chunk = samples_wav[0, T_SAMPLES - step_samples:T_SAMPLES].cpu()
+            generated_chunks.append(audio_chunk)
+
+            # Shift latent buffer for next step
+            shift_tensor_data(latent_buffer, r)
 
     # Concatenate all chunks
     full_generated = torch.cat(generated_chunks, dim=0)
@@ -230,7 +270,8 @@ def save_wav(path, audio, sr=SR):
 
 
 def process_track(track_dir, model, sampler, schedule, stems, r, w,
-                  num_steps, output_base, sample_counter, device):
+                  num_steps, output_base, sample_counter, device,
+                  max_duration=None, hot_start=False):
     """
     Generate all requested stems for one track, save in eval format.
 
@@ -246,6 +287,9 @@ def process_track(track_dir, model, sampler, schedule, stems, r, w,
         return sample_counter
     mixture_audio, sr = torchaudio.load(str(mixture_path))
     mixture_audio = mixture_audio[0]  # mono (L,)
+    if max_duration is not None:
+        max_samples = int(max_duration * SR)
+        mixture_audio = mixture_audio[:max_samples]
 
     if mixture_audio.shape[0] < T_SAMPLES:
         print(f"  Skipping {track_id}: too short ({mixture_audio.shape[0]} < {T_SAMPLES})")
@@ -264,11 +308,11 @@ def process_track(track_dir, model, sampler, schedule, stems, r, w,
 
         gt_audio, _ = torchaudio.load(str(gt_path))
         gt_audio = gt_audio[0]  # mono (L,)
+        if max_duration is not None:
+            gt_audio = gt_audio[:int(max_duration * SR)]
 
         # Use minimum length of mixture and gt stem
         common_length = min(mixture_audio.shape[0], gt_audio.shape[0])
-        n_steps = max(1, (common_length - T_SAMPLES) // step_samples + 1)
-        gen_length = n_steps * step_samples
 
         # Context = accompaniment (mixture minus target stem)
         context_audio = mixture_audio[:common_length] - gt_audio[:common_length]
@@ -276,16 +320,19 @@ def process_track(track_dir, model, sampler, schedule, stems, r, w,
         # Generate conditioned on context (what the performer plays)
         generated = generate_stem(
             model, sampler, schedule,
-            context_audio, stem_idx, r, w, num_steps, device
+            context_audio, stem_idx, r, w, num_steps, device,
+            hot_start=hot_start,
+            gt_audio=gt_audio[:common_length] if hot_start else None,
         )
 
-        # Trim all to generated length
+        # Use actual generated length for trimming
+        gen_length = generated.shape[0]
         gt_trimmed = gt_audio[:gen_length]
         mix_trimmed = mixture_audio[:gen_length]
         accompaniment = mix_trimmed - gt_trimmed  # input = mixture minus target stem
 
         # Construct pred mix: accompaniment + generated stem
-        pred_mix = accompaniment + generated[:gen_length]
+        pred_mix = accompaniment + generated
 
         # Output folder
         sample_dir = output_base / "model_predictions" / f"{sample_counter:05d}"
@@ -294,10 +341,11 @@ def process_track(track_dir, model, sampler, schedule, stems, r, w,
         save_wav(sample_dir / "input_audio.wav", accompaniment)
         save_wav(sample_dir / "ground_truth" / "pred.wav", gt_trimmed)
         save_wav(sample_dir / "ground_truth" / "mix.wav", mix_trimmed)
-        save_wav(sample_dir / "pred" / "pred.wav", generated[:gen_length])
+        save_wav(sample_dir / "pred" / "pred.wav", generated)
         save_wav(sample_dir / "pred" / "mix.wav", pred_mix)
 
         # Metadata
+        n_steps = max(1, (common_length - T_SAMPLES) // step_samples + 1)
         metadata = {
             "track_id": track_id,
             "stem": stem_name,
@@ -305,6 +353,7 @@ def process_track(track_dir, model, sampler, schedule, stems, r, w,
             "r": r,
             "w": w,
             "pr_win_mul": w + 1,
+            "hot_start": hot_start,
             "num_steps": n_steps,
             "sampling_steps": num_steps,
             "duration_s": round(mixture_audio.shape[0] / SR, 2),
@@ -347,6 +396,10 @@ def parse_args():
     parser.add_argument("--test_data_dir", type=str,
                         default="dataset/slakh2100_44100/test",
                         help="Path to test data directory")
+    parser.add_argument("--max_duration", type=float, default=None,
+                        help="Limit song duration in seconds (for debugging)")
+    parser.add_argument("--hot_start", action="store_true",
+                        help="Initialize first window with GT stem latent")
     return parser.parse_args()
 
 
@@ -381,7 +434,9 @@ def main():
         sample_counter = process_track(
             track_dir, model, sampler, schedule,
             args.stems, args.r, args.w, sampling_steps,
-            output_base, sample_counter, args.device
+            output_base, sample_counter, args.device,
+            max_duration=args.max_duration,
+            hot_start=args.hot_start
         )
 
     print(f"\nDone! Generated {sample_counter} samples in {output_base}")
