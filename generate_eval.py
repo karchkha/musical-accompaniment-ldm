@@ -157,6 +157,9 @@ def generate_stem(model, sampler, schedule, mixture_audio, stem_idx, r, w,
     features[0, stem_idx] = 1.0
 
     generated_chunks = []
+    chunk_overlaps = []  # overlap_before for each chunk
+    decode_deficit = None  # T_SAMPLES - decoded_length (e.g. 920)
+    XFADE_MARGIN = 50  # crossfade margin where both sides have real audio
 
     if hot_start:
         # Hot start: seed latent buffer with GT stem's first window
@@ -167,6 +170,7 @@ def generate_stem(model, sampler, schedule, mixture_audio, stem_idx, r, w,
         # Prepend GT context (the first (1-r)*T that won't be generated)
         context_samples = T_SAMPLES - step_samples
         generated_chunks.append(gt_audio[:context_samples].cpu())
+        chunk_overlaps.append(0)
 
     for step_i in tqdm(range(n_steps), desc=f"  {STEM_NAMES[stem_idx]}", leave=False):
         # 1. Slice mixture audio for this window
@@ -208,13 +212,17 @@ def generate_stem(model, sampler, schedule, mixture_audio, stem_idx, r, w,
             # Keep full latent as context for next steps
             latent_buffer = samples.clone()
 
-            # Decode and keep full window audio
+            # Decode and keep full window audio (first chunk, no overlap)
             samples_wav = model.CAE.decode(samples.squeeze(1))
-            if samples_wav.shape[-1] < T_SAMPLES:
+            decode_len = samples_wav.shape[-1]
+            if decode_deficit is None:
+                decode_deficit = T_SAMPLES - decode_len
+            if decode_len < T_SAMPLES:
                 samples_wav = torch.nn.functional.pad(
-                    samples_wav, (0, T_SAMPLES - samples_wav.shape[-1])
+                    samples_wav, (0, T_SAMPLES - decode_len)
                 )
             generated_chunks.append(samples_wav[0, :T_SAMPLES].cpu())
+            chunk_overlaps.append(0)
 
             # Shift for next step
             shift_tensor_data(latent_buffer, r)
@@ -239,20 +247,57 @@ def generate_stem(model, sampler, schedule, mixture_audio, stem_idx, r, w,
             gen_start = int(LATENT_SIZE * (1 - r))
             latent_buffer[:, :, :, gen_start:] = samples[:, :, :, gen_start:].clone()
 
-            # Decode and extract the newly generated chunk
+            # Decode
             samples_wav = model.CAE.decode(samples.squeeze(1))
-            if samples_wav.shape[-1] < T_SAMPLES:
+            decode_len = samples_wav.shape[-1]
+            if decode_deficit is None:
+                decode_deficit = T_SAMPLES - decode_len
+            if decode_len < T_SAMPLES:
                 samples_wav = torch.nn.functional.pad(
-                    samples_wav, (0, T_SAMPLES - samples_wav.shape[-1])
+                    samples_wav, (0, T_SAMPLES - decode_len)
                 )
-            audio_chunk = samples_wav[0, T_SAMPLES - step_samples:T_SAMPLES].cpu()
+
+            # Extract chunk — extended with overlap when possible (not r=1)
+            overlap = decode_deficit + XFADE_MARGIN
+            can_extend = (
+                decode_deficit > 0
+                and step_samples + overlap <= decode_len
+                and len(generated_chunks) > 0
+            )
+            if can_extend:
+                audio_chunk = samples_wav[0, T_SAMPLES - step_samples - overlap:T_SAMPLES].cpu()
+                chunk_overlaps.append(overlap)
+            else:
+                audio_chunk = samples_wav[0, T_SAMPLES - step_samples:T_SAMPLES].cpu()
+                chunk_overlaps.append(0)
             generated_chunks.append(audio_chunk)
 
             # Shift latent buffer for next step
             shift_tensor_data(latent_buffer, r)
 
-    # Concatenate all chunks
-    full_generated = torch.cat(generated_chunks, dim=0)
+    # Concatenate chunks with crossfade at overlap boundaries
+    # Each extended chunk has `overlap` extra samples at the start that overlap
+    # with the previous chunk's tail. The previous tail has `XFADE_MARGIN` real
+    # samples followed by `decode_deficit` zeros (from padding). We crossfade
+    # over the XFADE_MARGIN region (both sides real) then replace the zeros.
+    full_generated = generated_chunks[0]
+    for i in range(1, len(generated_chunks)):
+        chunk = generated_chunks[i]
+        overlap = chunk_overlaps[i]
+        if overlap > 0:
+            xfade = XFADE_MARGIN
+            # Crossfade the first xfade samples of overlap (both sides real audio)
+            fade = torch.linspace(0, 1, xfade)
+            blended = full_generated[-overlap:-overlap + xfade] * (1 - fade) + chunk[:xfade] * fade
+            # After crossfade region: current chunk replaces previous zeros
+            full_generated = torch.cat([
+                full_generated[:-overlap],
+                blended,
+                chunk[xfade:],
+            ])
+        else:
+            full_generated = torch.cat([full_generated, chunk])
+
     return full_generated
 
 
