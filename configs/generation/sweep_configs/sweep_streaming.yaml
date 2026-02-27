@@ -1,0 +1,19 @@
+program: generate_eval.py
+method: grid
+project: stream-music-gen
+
+parameters:
+  r:
+    values: [0.015625, 0.03125, 0.0625, 0.125, 0.25, 0.5, 1.0]
+  w:
+    values: [-1, 0, 1]
+
+command:
+  - /data/reach/karchkhadze/anaconda3/envs/ctm_gen/bin/python
+  - ${program}
+  - --config
+  - configs/for_server/Diff_latent_cond_gen_concat_eval.yaml
+  - --wandb
+  - --wandb_project
+  - stream-music-gen
+  - ${args}
