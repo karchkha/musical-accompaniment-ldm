@@ -5,12 +5,18 @@ Simulates the real-time server's sliding-window inpainting pipeline offline,
 generating full-song accompaniment stems from the Slakh2100 test set.
 Output matches stream-music-gen's evaluation folder format for COCOLA, Beat F1, FAD.
 
+Outputs go to:
+    lightning_logs/streaming_eval_outputs/{run_name}/model_predictions/00000/...
+
+Run name is auto-generated as:
+    {config_stem}_r{r}_w{w}[_hot][_{stems}]
+or overridden with --run_name.
+
 Usage:
     python generate_eval.py \
         --config configs/for_server/Diff_latent_cond_gen_concat_eval.yaml \
         --r 0.25 --w 0 \
         --num_samples 10 \
-        --output_dir lightning_logs/eval_outputs/diffusion_r0.25_w0 \
         --device cuda:1 \
         --stems bass drums guitar piano
 """
@@ -20,6 +26,7 @@ import glob
 import importlib
 import json
 import os
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -423,6 +430,26 @@ def process_track(track_dir, model, sampler, schedule, stems, r, w,
 # Main
 # ---------------------------------------------------------------------------
 
+STREAMING_EVAL_BASE = Path("lightning_logs/streaming_eval_outputs")
+
+
+def make_run_name(config_path, r, w, hot_start, stems):
+    """Auto-generate a run name from config + hyperparams."""
+    # e.g. configs/for_server/Diff_latent_cond_gen_concat_eval.yaml
+    #   -> Diff_latent_cond_gen_concat
+    stem = Path(config_path).stem
+    for suffix in ("_eval", "_train"):
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+            break
+    name = f"{stem}_r{r}_w{w}"
+    if hot_start:
+        name += "_hot"
+    if sorted(stems) != sorted(STEM_NAMES):
+        name += "_" + "+".join(stems)
+    return name
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Offline generation for evaluation")
     parser.add_argument("--config", type=str, required=True,
@@ -435,8 +462,8 @@ def parse_args():
                         help="Look-ahead depth: -1=offline, 0=sync, 1=look-ahead")
     parser.add_argument("--num_samples", type=int, default=None,
                         help="Max number of test tracks (default: all)")
-    parser.add_argument("--output_dir", type=str, required=True,
-                        help="Output directory for generated audio")
+    parser.add_argument("--run_name", type=str, default=None,
+                        help="Override auto-generated run name")
     parser.add_argument("--device", type=str, default="cuda:0",
                         help="Device (default: cuda:0)")
     parser.add_argument("--stems", nargs="+", default=STEM_NAMES,
@@ -452,7 +479,7 @@ def parse_args():
 
     # --- evaluation flags (mirrors stream-music-gen gen_and_evaluate.py) ---
     parser.add_argument("--skip_generation", action="store_true",
-                        help="Skip generation, run evaluation only on existing output_dir")
+                        help="Skip generation, run evaluation only on existing run folder")
     parser.add_argument("--skip_resampling", action="store_true",
                         help="Skip resampling to 16 kHz (assumes already done)")
     parser.add_argument("--skip_beat_alignment", action="store_true",
@@ -463,18 +490,19 @@ def parse_args():
                         help="Skip FAD calculation")
     parser.add_argument("--sub_fad", action="store_true",
                         help="Evaluate FAD on mixes instead of stems")
-    parser.add_argument("--results_save_dir", type=str,
-                        default="lightning_logs/eval_results",
-                        help="Directory to save evaluation results JSON")
     parser.add_argument("--generation_only", action="store_true",
                         help="Only generate audio, skip evaluation")
+    parser.add_argument("--keep_audio", action="store_true",
+                        help="Keep model_predictions/ after evaluation (default: delete to save disk)")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
 
-    output_base = Path(args.output_dir)
+    run_name = args.run_name or make_run_name(args.config, args.r, args.w,
+                                              args.hot_start, args.stems)
+    output_base = STREAMING_EVAL_BASE / run_name
 
     # -----------------------------------------------------------------------
     # Generation
@@ -484,7 +512,8 @@ def main():
         print(f"r={args.r}, w={args.w} (pr_win_mul={args.w + 1})")
         print(f"Stems: {args.stems}")
         print(f"Device: {args.device}")
-        print(f"Output: {args.output_dir}")
+        print(f"Run:    {run_name}")
+        print(f"Output: {output_base}")
 
         model, sampler, schedule, sampling_steps, _ = load_model(
             args.config, args.checkpoint, args.device
@@ -587,13 +616,18 @@ def main():
         results["fad"] = {"score": float(fad_score)}
         print(f"FAD: {fad_score:.4f}")
 
-    # Save results
-    os.makedirs(args.results_save_dir, exist_ok=True)
-    run_name = Path(args.output_dir).name
-    results_file = os.path.join(args.results_save_dir, f"{run_name}.json")
+    # Save results inside the run folder
+    results_file = output_base / "results.json"
     with open(results_file, "w") as f:
         json.dump(results, f, indent=2)
     print(f"\nResults saved to: {results_file}")
+
+    # Clean up generated audio unless --keep_audio
+    if not args.keep_audio:
+        predictions_dir = output_base / "model_predictions"
+        if predictions_dir.exists():
+            shutil.rmtree(str(predictions_dir))
+            print(f"Cleaned up {predictions_dir} (use --keep_audio to retain audio files)")
 
 
 if __name__ == "__main__":
