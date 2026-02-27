@@ -7,10 +7,9 @@ import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
-# from flash_attn.flash_attn_interface import flash_attn_varlen_qkvpacked_func
-from flash_attn.flash_attn_interface import flash_attn_unpadded_qkvpacked_func as flash_attn_varlen_qkvpacked_func
+from flash_attn.flash_attn_interface import flash_attn_varlen_qkvpacked_func
+# from flash_attn.flash_attn_interface import flash_attn_unpadded_qkvpacked_func as flash_attn_varlen_qkvpacked_func
 from flash_attn.bert_padding import unpad_input, pad_input
-from xformers.components.attention import ScaledDotProduct
 
 from .nn import (
     checkpoint,
@@ -515,7 +514,6 @@ def count_flops_attn(model, _x, y):
 class XformersAttention(nn.Module):
     def __init__(self, num_heads):
         super().__init__()
-        self.attention = ScaledDotProduct()
         self.num_heads = num_heads
     
     def forward(self, qkv, attn_mask=None):
@@ -525,7 +523,8 @@ class XformersAttention(nn.Module):
         q, k, v = rearrange(
             qkv, "b (three h d) s -> (b h) three s d", three=3, h=self.num_heads
         ).chunk(3, dim=1)
-        return rearrange(self.attention(q.squeeze(1), k.squeeze(1), v.squeeze(1), attn_mask), "(b h) s d -> b (h d) s", h=self.num_heads)
+        out = F.scaled_dot_product_attention(q.squeeze(1), k.squeeze(1), v.squeeze(1), attn_mask=attn_mask)
+        return rearrange(out, "(b h) s d -> b (h d) s", h=self.num_heads)
 
 class QKVAttentionLegacy(nn.Module):
     """

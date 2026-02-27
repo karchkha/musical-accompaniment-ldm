@@ -3,233 +3,64 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  - _libgcc_mutex=0.1=main
-  - _openmp_mutex=5.1=1_gnu
-  - asttokens=2.4.1=pyhd8ed1ab_0
-  - backcall=0.2.0=pyh9f0ad1d_0
-  - ca-certificates=2024.6.2=hbcca054_0
-  - comm=0.2.2=pyhd8ed1ab_0
-  - debugpy=1.6.7=py39h6a678d5_0
-  - decorator=5.1.1=pyhd8ed1ab_0
-  - entrypoints=0.4=pyhd8ed1ab_0
-  - executing=2.0.1=pyhd8ed1ab_0
-  - ipykernel=6.29.4=pyh3099207_0
-  - ipython=8.12.0=pyh41d4057_0
-  - jedi=0.19.1=pyhd8ed1ab_0
-  - jupyter_client=7.3.4=pyhd8ed1ab_0
-  - jupyter_core=5.7.2=py39hf3d152e_0
-  - ld_impl_linux-64=2.38=h1181459_1
-  - libffi=3.4.4=h6a678d5_1
-  - libgcc-ng=11.2.0=h1234567_1
-  - libgfortran-ng=7.5.0=h14aa051_20
-  - libgfortran4=7.5.0=h14aa051_20
-  - libgomp=11.2.0=h1234567_1
-  - libsodium=1.0.18=h36c2ea0_1
-  - libstdcxx-ng=11.2.0=h1234567_1
-  - matplotlib-inline=0.1.7=pyhd8ed1ab_0
-  - mpi=1.0=openmpi
-  - mpi4py=3.1.4=py39h3e5f7c9_0
-  - ncurses=6.4=h6a678d5_0
-  - nest-asyncio=1.6.0=pyhd8ed1ab_0
-  - openmpi=4.0.4=hdf1f1ad_0
-  - openssl=3.0.14=h5eee18b_0
-  - packaging=24.1=pyhd8ed1ab_0
-  - parso=0.8.4=pyhd8ed1ab_0
-  - pexpect=4.9.0=pyhd8ed1ab_0
-  - pickleshare=0.7.5=py_1003
-  - pip=24.0=py39h06a4308_0
-  - platformdirs=4.2.2=pyhd8ed1ab_0
-  - prompt-toolkit=3.0.47=pyha770c72_0
-  - prompt_toolkit=3.0.47=hd8ed1ab_0
-  - psutil=5.9.0=py39h5eee18b_0
-  - ptyprocess=0.7.0=pyhd3deb0d_0
-  - pure_eval=0.2.2=pyhd8ed1ab_0
-  - pygments=2.18.0=pyhd8ed1ab_0
-  - python=3.9.19=h955ad1f_1
-  - python_abi=3.9=2_cp39
-  - pyzmq=25.1.2=py39h6a678d5_0
-  - readline=8.2=h5eee18b_0
-  - setuptools=69.5.1=py39h06a4308_0
-  - six=1.16.0=pyh6c4a22f_0
-  - sqlite=3.45.3=h5eee18b_0
-  - stack_data=0.6.2=pyhd8ed1ab_0
-  - tk=8.6.14=h39e8969_0
-  - tornado=6.1=py39hb9d737c_3
-  - traitlets=5.14.3=pyhd8ed1ab_0
-  - typing_extensions=4.12.2=pyha770c72_0
-  - wcwidth=0.2.13=pyhd8ed1ab_0
-  - wheel=0.43.0=py39h06a4308_0
-  - xz=5.4.6=h5eee18b_1
-  - zeromq=4.3.5=h6a678d5_0
-  - zlib=1.2.13=h5eee18b_1
+  - python=3.10
+  - pip
+  - mpi4py
   - pip:
-    - absl-py==2.1.0
-    - albumentations==0.4.3
-    - array-record==0.5.1
-    - astunparse==1.6.3
-    - attrs==23.2.0
-    - audioldm-eval==0.0.5
-    - audioread==3.0.1
-    - av==13.0.0
-    - blobfile==2.1.1
-    - brotli==1.1.0
-    - certifi==2024.6.2
-    - cffi==1.16.0
-    - charset-normalizer==3.3.2
-    - click==8.1.7
-    - cmake==3.29.6
-    - contourpy==1.2.1
-    - cycler==0.12.1
-    - cython==3.0.10
-    - dill==0.3.8
-    - dm-tree==0.1.8
-    - docker-pycreds==0.4.0
-    - einops==0.8.0
-    - einops-exts==0.0.4
-    - etils==1.5.2
-    - fastjsonschema==2.20.0
-    - ffmpeg-python==0.2.0
-    - filelock==3.15.4
-    - flash-attn==0.2.8
-    - flatbuffers==24.3.25
-    - fonttools==4.53.0
-    - fsspec==2024.6.1
-    - ftfy==6.2.0
-    - future==1.0.0
-    - gast==0.6.0
-    - gitdb==4.0.11
-    - gitpython==3.1.43
-    - google-pasta==0.2.0
-    - grpcio==1.64.1
-    - h5py==3.11.0
-    - huggingface-hub==0.27.1
-    - idna==3.7
-    - imageio==2.34.2
-    - imgaug==0.2.6
-    - importlib-metadata==8.0.0
-    - importlib-resources==6.4.0
-    - inflate64==1.0.0
-    - ipython-genutils==0.2.0
-    - jinja2==3.1.4
-    - joblib==1.4.2
-    - jsonschema==4.23.0
-    - jsonschema-specifications==2023.12.1
-    - keras==3.4.1
-    - kiwisolver==1.4.5
-    - lazy-loader==0.4
-    - legacy==0.1.7
-    - libclang==18.1.1
-    - librosa==0.9.1
-    - lightning-utilities==0.11.3.post0
-    - lit==18.1.8
-    - llvmlite==0.43.0
-    - lmdb==1.4.1
-    - lxml==4.9.4
-    - markdown==3.6
-    - markdown-it-py==3.0.0
-    - markupsafe==2.1.5
-    - matplotlib==3.9.0
-    - mdurl==0.1.2
-    - ml-dtypes==0.3.2
-    - mpmath==1.3.0
-    - msgpack==1.0.8
-    - multivolumefile==0.2.3
-    - musdb==0.4.2
-    - music2latent==0.1.6
-    - namex==0.0.8
-    - nbformat==5.10.4
-    - networkx==3.2.1
-    - numba==0.60.0
-    - numpy==1.26.4
-    - nvidia-cublas-cu11==11.10.3.66
-    - nvidia-cublas-cu12==12.3.4.1
-    - nvidia-cuda-cupti-cu11==11.7.101
-    - nvidia-cuda-cupti-cu12==12.3.101
-    - nvidia-cuda-nvcc-cu12==12.3.107
-    - nvidia-cuda-nvrtc-cu11==11.7.99
-    - nvidia-cuda-nvrtc-cu12==12.3.107
-    - nvidia-cuda-runtime-cu11==11.7.99
-    - nvidia-cuda-runtime-cu12==12.3.101
-    - nvidia-cudnn-cu11==8.5.0.96
-    - nvidia-cudnn-cu12==8.9.7.29
-    - nvidia-cufft-cu11==10.9.0.58
-    - nvidia-cufft-cu12==11.0.12.1
-    - nvidia-curand-cu11==10.2.10.91
-    - nvidia-curand-cu12==10.3.4.107
-    - nvidia-cusolver-cu11==11.4.0.1
-    - nvidia-cusolver-cu12==11.5.4.101
-    - nvidia-cusparse-cu11==11.7.4.91
-    - nvidia-cusparse-cu12==12.2.0.103
-    - nvidia-ml-py3==7.352.0
-    - nvidia-nccl-cu11==2.14.3
-    - nvidia-nccl-cu12==2.19.3
-    - nvidia-nvjitlink-cu12==12.3.101
-    - nvidia-nvtx-cu11==11.7.91
-    - opencv-python-headless==4.10.0.84
-    - opt-einsum==3.3.0
-    - optree==0.11.0
-    - pandas==2.2.2
-    - panns-inference==0.1.1
-    - pillow==10.3.0
-    - piq==0.7.0
-    - plotly==5.24.0
-    - pooch==1.8.2
-    - promise==2.3
-    - protobuf==3.20.3
-    - py7zr==0.21.1
-    - pyaml==24.7.0
-    - pybcj==1.0.2
-    - pycparser==2.22
-    - pycryptodomex==3.20.0
-    - pyparsing==3.1.2
-    - pyppmd==1.1.0
-    - python-dateutil==2.9.0.post0
-    - python-osc==1.8.3
+    # Core torch (CUDA 12.1, compatible with driver 535/CUDA 12.2)
+    - setuptools==69.5.1          # pkg_resources removed in setuptools>=70
+    - torch==2.4.1 --index-url https://download.pytorch.org/whl/cu121
+    - torchaudio==2.4.1 --index-url https://download.pytorch.org/whl/cu121
+    - torchvision==0.19.1 --index-url https://download.pytorch.org/whl/cu121
+    - triton==3.0.0
+
+    # flash-attn pre-built wheel (no compilation needed, torch doesn't have to be pre-installed)
+    - flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.6.3/flash_attn-2.6.3%2Bcu118torch2.4cxx11abiFALSE-cp310-cp310-linux_x86_64.whl
+    - xformers==0.0.28.post1
+
+    # Training / Lightning
     - pytorch-lightning==2.3.1
-    - pytz==2024.1
-    - pyyaml==6.0.1
-    - pyzstd==0.16.0
-    - referencing==0.35.1
-    - regex==2024.5.15
-    - requests==2.32.3
-    - resampy==0.4.3
-    - rich==13.7.1
-    - rpds-py==0.20.0
-    - scikit-image==0.24.0
-    - scikit-learn==1.5.1
-    - scipy==1.13.1
-    - sentry-sdk==2.7.1
-    - setproctitle==1.3.3
-    - smmap==5.0.1
-    - soundfile==0.12.1
-    - soxr==0.3.7
-    - ssr-eval==0.0.7
-    - stempeg==0.2.3
-    - sympy==1.12.1
-    - tenacity==9.0.0
-    - termcolor==2.4.0
-    - texttable==1.7.0
-    - threadpoolctl==3.5.0
-    - tifffile==2024.6.18
-    - timm==0.4.12
-    - toml==0.10.2
-    - torch==2.0.1
-    - torch-fidelity==0.3.0
-    - torchaudio==2.0.2
-    - torchlibrosa==0.1.0
-    - torchmetrics==1.4.0.post0
-    - torchvision==0.15.2
-    - tqdm==4.66.4
-    - triton==2.0.0
-    - tzdata==2024.1
-    - urllib3==2.2.2
-    - wandb==0.17.4
-    - wave==0.0.2
-    - werkzeug==3.0.3
-    - wrapt==1.16.0
-    - xformers==0.0.22
-    - zipp==3.19.2
-    # Eval dependencies (from stream-music-gen)
+    - lightning-utilities
+    - torchmetrics
+
+    # Audio
+    - librosa==0.11.0
+    - soundfile
+    - resampy
+    - soxr
+    - music2latent==0.1.6     # pin: inference depends on exact version
+    - musdb
+    - stempeg
+    - av==13.0.0
+
+    # ML / Science
+    - numpy
+    - scipy
+    - scikit-learn
+    - einops==0.8.0            # pin: used in model forward passes
+    - einops-exts==0.0.4       # pin: matches einops 0.8.0
+
+    # NOTE: audioldm_eval must be installed manually after env creation (MySQL-python dep breaks):
+    #   pip install scikit-image
+    #   pip install --no-deps ssr-eval
+    #   pip install --no-deps "audioldm-eval @ git+https://github.com/haoheliu/audioldm_eval.git"
+
+    # Experiment tracking
+    - wandb
+    - pyyaml
+    - tqdm
+    - rich==13.7.1            # pin: rich 14.x breaks PL 2.3.1 RichProgressBar
+
+    # Misc
+    - lmdb
+    - pandas
+    - matplotlib
+    - pillow
+    - requests
+    - huggingface-hub==0.36.2        # pin: matched by transformers==4.49.0
+    - transformers==4.49.0           # pin: >=4.50 adds check_torch_load_is_safe() which blocks torch<2.6 (CVE-2025-32434)
+
+    # Eval dependencies
     - pqdm
     - descript-audiotools==0.7.2
     - frechet_audio_distance @ git+https://github.com/maswang32/frechet-audio-distance
@@ -237,6 +68,3 @@ dependencies:
     - beat_transformer @ git+https://github.com/lancelotblanchard/beat-transformer-online-stem-gen.git@f9944f10ac1e3a79c117ab6f5a8f40ac7e4414e8#egg=beat_transformer
     - madmom @ git+https://github.com/CPJKU/madmom.git@27f032e
     - beat_this @ https://github.com/CPJKU/beat_this/archive/main.zip
-    # NOTE: after creating this env, run: bash main/eval/patch_deps.sh
-    # (patches beat_this for Python 3.9 compatibility)
-prefix: /data/reach/karchkhadze/anaconda3/envs/ctm_gen
