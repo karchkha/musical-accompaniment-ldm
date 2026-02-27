@@ -494,14 +494,69 @@ def parse_args():
                         help="Only generate audio, skip evaluation")
     parser.add_argument("--keep_audio", action="store_true",
                         help="Keep model_predictions/ after evaluation (default: delete to save disk)")
+    parser.add_argument("--wandb", action="store_true",
+                        help="Log results to W&B")
+    parser.add_argument("--wandb_project", type=str, default="stream-music-gen",
+                        help="W&B project name (default: stream-music-gen)")
+    parser.add_argument("--wandb_entity", type=str, default=None,
+                        help="W&B entity (default: logged-in user)")
     return parser.parse_args()
+
+
+def flatten_results(results, prefix=""):
+    """Flatten nested results dict into wandb-loggable key/value pairs."""
+    flat = {}
+    for k, v in results.items():
+        key = f"{prefix}/{k}" if prefix else k
+        if isinstance(v, dict):
+            flat.update(flatten_results(v, prefix=key))
+        else:
+            flat[key] = v
+    return flat
 
 
 def main():
     args = parse_args()
 
+    # -----------------------------------------------------------------------
+    # W&B init — before run_name so sweep agent can override r / w
+    # -----------------------------------------------------------------------
+    wandb_run = None
+    if args.wandb:
+        import wandb as _wandb
+
+        T_s = T_SAMPLES / SR
+        wandb_run = _wandb.init(
+            project=args.wandb_project,
+            entity=args.wandb_entity or None,
+            config={
+                # core hyperparams
+                "r":            args.r,
+                "w":            args.w,
+                "hot_start":    args.hot_start,
+                # derived timing (comparable to streaming delay times)
+                "T_s":          T_s,
+                "step_s":       round(T_s * args.r, 4),
+                "context_s":    round(T_s * (1 - args.r), 4),
+                "lookahead_s":  round(T_s * args.r * max(0, args.w), 4),
+                # run setup
+                "config":       args.config,
+                "checkpoint":   args.checkpoint,
+                "stems":        args.stems,
+                "num_samples":  args.num_samples,
+                "max_duration": args.max_duration,
+                "test_data_dir": args.test_data_dir,
+            },
+        )
+        # Allow sweep agent to override r / w
+        args.r = _wandb.config.get("r", args.r)
+        args.w = _wandb.config.get("w", args.w)
+
     run_name = args.run_name or make_run_name(args.config, args.r, args.w,
                                               args.hot_start, args.stems)
+    if wandb_run is not None:
+        wandb_run.name = run_name
+
     output_base = STREAMING_EVAL_BASE / run_name
 
     # -----------------------------------------------------------------------
@@ -621,6 +676,11 @@ def main():
     with open(results_file, "w") as f:
         json.dump(results, f, indent=2)
     print(f"\nResults saved to: {results_file}")
+
+    if wandb_run is not None:
+        import wandb as _wandb
+        _wandb.log(flatten_results(results))
+        wandb_run.finish()
 
     # Clean up generated audio unless --keep_audio
     if not args.keep_audio:
