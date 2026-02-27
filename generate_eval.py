@@ -27,6 +27,7 @@ import importlib
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -488,6 +489,8 @@ def parse_args():
                         help="Skip COCOLA score calculation")
     parser.add_argument("--skip_fad", action="store_true",
                         help="Skip FAD calculation")
+    parser.add_argument("--allow_degenerate", action="store_true",
+                        help="Run even degenerate configs (>50%% mixture zeroed, or w=-1 with r<0.125)")
     parser.add_argument("--sub_fad", action="store_true",
                         help="Evaluate FAD on mixes instead of stems")
     parser.add_argument("--generation_only", action="store_true",
@@ -551,6 +554,24 @@ def main():
         # Allow sweep agent to override r / w
         args.r = _wandb.config.get("r", args.r)
         args.w = _wandb.config.get("w", args.w)
+
+    # ------------------------------------------------------------------
+    # Skip degenerate sweep configurations (override with --allow_degenerate)
+    # ------------------------------------------------------------------
+    pr_win_mul = args.w + 1
+    skip_reason = None
+    if not args.allow_degenerate and pr_win_mul > 0 and pr_win_mul * args.r > 0.5:
+        skip_reason = (f"w={args.w}, r={args.r}: {pr_win_mul}*{args.r}={pr_win_mul * args.r:.4f} > 0.5 "
+                       f"(more than half of mixture context zeroed)")
+    elif not args.allow_degenerate and args.w == -1 and args.r < 0.125:
+        skip_reason = (f"w=-1, r={args.r}: offline mode with r<0.125 not informative "
+                       f"(diminishing returns, high compute cost)")
+    if skip_reason:
+        print(f"Skipping degenerate config: {skip_reason}")
+        if wandb_run is not None:
+            wandb_run.notes = f"skipped: {skip_reason}"
+            wandb_run.finish(exit_code=0)
+        sys.exit(0)
 
     run_name = args.run_name or make_run_name(args.config, args.r, args.w,
                                               args.hot_start, args.stems)
