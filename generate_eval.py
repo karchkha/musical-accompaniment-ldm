@@ -529,9 +529,11 @@ def main():
         import wandb as _wandb
 
         T_s = T_SAMPLES / SR
+        STREAMING_EVAL_BASE.mkdir(parents=True, exist_ok=True)
         wandb_run = _wandb.init(
             project=args.wandb_project,
             entity=args.wandb_entity or None,
+            dir=str(STREAMING_EVAL_BASE),
             config={
                 # core hyperparams
                 "r":            args.r,
