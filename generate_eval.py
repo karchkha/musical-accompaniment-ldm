@@ -503,6 +503,8 @@ def parse_args():
                         help="W&B project name (default: stream-music-gen)")
     parser.add_argument("--wandb_entity", type=str, default=None,
                         help="W&B entity (default: logged-in user)")
+    parser.add_argument("--wandb_run_id", type=str, default=None,
+                        help="Resume an existing W&B run by ID")
     return parser.parse_args()
 
 
@@ -533,6 +535,8 @@ def main():
         wandb_run = _wandb.init(
             project=args.wandb_project,
             entity=args.wandb_entity or None,
+            id=args.wandb_run_id or None,
+            resume="must" if args.wandb_run_id else None,
             dir=str(STREAMING_EVAL_BASE),
             config={
                 # core hyperparams
@@ -641,7 +645,7 @@ def main():
         # exclude already-resampled files
         files_to_resample = [f for f in files_to_resample
                              if f"_{EVAL_SAMPLE_RATE}.wav" not in f]
-        eval_utils.load_resample_save(files_to_resample, SR, EVAL_SAMPLE_RATE)
+        eval_utils.load_resample_save(files_to_resample, SR, EVAL_SAMPLE_RATE, batch_size=1)
 
     if not args.skip_beat_alignment:
         print("\nComputing beat alignment...")
