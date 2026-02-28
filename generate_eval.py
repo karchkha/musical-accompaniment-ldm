@@ -548,6 +548,7 @@ def main():
                 "step_s":       round(T_s * args.r, 4),
                 "context_s":    round(T_s * (1 - args.r), 4),
                 "lookahead_s":  round(T_s * args.r * max(0, args.w), 4),
+                "net_lookahead_s": round(T_s * args.r * args.w, 4),
                 # run setup
                 "config":       args.config,
                 "checkpoint":   args.checkpoint,
