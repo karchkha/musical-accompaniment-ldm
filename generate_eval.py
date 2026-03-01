@@ -516,6 +516,12 @@ def process_track(track_dir, model, sampler, schedule, stems, r, w,
     if not available_stems:
         return sample_counter
 
+    # If all output dirs for this track already exist, skip generation
+    first_sample_dir = output_base / "model_predictions" / f"{sample_counter:05d}"
+    if (first_sample_dir / "pred" / "pred.wav").exists():
+        print(f"  Skipping {track_id}: already generated (starting at {sample_counter:05d})")
+        return sample_counter + len(available_stems)
+
     # Generate all stems in one batched pass (~4x faster than sequential)
     generated_dict = generate_all_stems_batched(
         model, sampler, schedule, mixture_audio, gt_audios, available_stems,
@@ -744,7 +750,11 @@ def main():
 
         output_base.mkdir(parents=True, exist_ok=True)
 
-        sample_counter = 0
+        predictions_dir = output_base / "model_predictions"
+        sample_counter = len([d for d in predictions_dir.iterdir() if d.is_dir()]) if predictions_dir.exists() else 0
+        if sample_counter > 0:
+            print(f"Resuming: found {sample_counter} existing samples, skipping already-done tracks.")
+
         for track_dir in tqdm(track_dirs, desc="Tracks"):
             sample_counter = process_track(
                 track_dir, model, sampler, schedule,
