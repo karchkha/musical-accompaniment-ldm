@@ -71,7 +71,7 @@ def instantiate_from_config(config, **kwargs):
 
 
 def create_temporal_mask(like, mask_ratio):
-    """Creates a temporal mask: True = keep (context), False = generate."""
+    """Creates a boolean temporal mask: True = keep (context), False = generate."""
     _, _, F, T = like.shape
     mask = torch.ones_like(like, dtype=torch.bool)
     t_mask = int(T * mask_ratio)
@@ -94,6 +94,43 @@ def shift_tensor_data(tensor, percentage):
 # ---------------------------------------------------------------------------
 # Model loading
 # ---------------------------------------------------------------------------
+
+def load_ctm_model(config_path, checkpoint_path, device):
+    """Load CTM/CD model — mirrors server_CD.py's load_network pattern."""
+    from main.audio_ctm import Audio_CTM_Model
+
+    config = yaml.load(open(config_path, "r"), Loader=yaml.FullLoader)
+    cfg = dict2namespace(config)
+
+    model = Audio_CTM_Model(cfg)
+    print("Initialized CTM/CD model.")
+
+    ckpt_path = checkpoint_path or getattr(cfg, "resume_from_checkpoint", None)
+    if ckpt_path:
+        print(f"Loading checkpoint: {ckpt_path}")
+        checkpoint = torch.load(ckpt_path, map_location="cpu")
+        model.load_state_dict(checkpoint["state_dict"], strict=False)
+        print("Checkpoint loaded.")
+    else:
+        print("WARNING: No checkpoint — running with random weights.")
+
+    # Mirror server_CD.py: extract net + diffusion, delete the wrapper
+    latent_diffusion, diffusion_sampler = model.net, model.diffusion
+    cae = model.CAE
+    del model
+
+    latent_diffusion.to(device).eval()
+    cae.to(device).eval()
+
+    sigma_min = cfg.diffusion.sigma_min
+    sigma_max = cfg.diffusion.sigma_max
+    rho = getattr(cfg.diffusion, "rho", 7.0)
+    logger_cfg = cfg.audio_samples_logger
+    ctm_sampler = logger_cfg.sampler_to_calculate_metrics
+    steps = logger_cfg.steps_to_calculate_metrics
+
+    return latent_diffusion, diffusion_sampler, cae, sigma_min, sigma_max, rho, ctm_sampler, steps, config
+
 
 def load_model(config_path, checkpoint_path, device):
     """Load diffusion model, CAE, sampler, and schedule from config."""
@@ -458,6 +495,157 @@ def generate_all_stems_batched(model, sampler, schedule, mixture_audio, gt_audio
 
 
 # ---------------------------------------------------------------------------
+# CTM/CD batched generation — mirrors server_CD.py's predict() in sliding-window form
+# ---------------------------------------------------------------------------
+
+@torch.no_grad()
+def generate_all_stems_batched_ctm(latent_diffusion, diffusion_sampler, cae,
+                                    mixture_audio, gt_audios, stems,
+                                    r, w, num_steps, device,
+                                    ctm_sampler, sigma_min, sigma_max, rho,
+                                    hot_start=False):
+    """
+    Sliding-window inpainting for all stems simultaneously using karras_sample.
+    Mirrors generate_all_stems_batched but uses the CTM/CD model API from server_CD.py.
+    """
+    from ctm.sample_util import karras_sample
+
+    B = len(stems)
+    step_samples = int(T_SAMPLES * r)
+    pr_win_mul = w + 1
+    L = min(mixture_audio.shape[0], min(gt_audios[s].shape[0] for s in stems))
+    n_steps = max(1, (L - T_SAMPLES) // step_samples + 1)
+
+    context_audios = [mixture_audio[:L] - gt_audios[s][:L] for s in stems]
+
+    # Latent buffer and float mask (server_CD.py uses float, not bool)
+    latent_buffer = torch.zeros(B, 1, LATENT_SIZE, LATENT_SIZE, device=device)
+    mask = torch.ones(1, 1, LATENT_SIZE, LATENT_SIZE, device=device)
+    t_mask = int(LATENT_SIZE * r)
+    mask[:, :, :, LATENT_SIZE - t_mask:] = 0.0
+    mask = mask.expand(B, -1, -1, -1)
+
+    # One-hot features (B, 4)
+    features = torch.zeros(B, len(STEM_NAMES), device=device)
+    for i, s in enumerate(stems):
+        features[i, STEM_NAMES.index(s)] = 1.0
+
+    generated_chunks = [[] for _ in range(B)]
+    chunk_overlaps  = [[] for _ in range(B)]
+    decode_deficits = [None] * B
+    XFADE_MARGIN = 50
+
+    if hot_start:
+        for i, s in enumerate(stems):
+            gt_win = gt_audios[s][:T_SAMPLES].clone()
+            if gt_win.shape[0] < T_SAMPLES:
+                gt_win = torch.nn.functional.pad(gt_win, (0, T_SAMPLES - gt_win.shape[0]))
+            latent_buffer[i:i+1] = cae.encode(gt_win.unsqueeze(0).to(device)).unsqueeze(1)
+            generated_chunks[i].append(gt_audios[s][:T_SAMPLES - step_samples].cpu())
+            chunk_overlaps[i].append(0)
+
+    for step_i in tqdm(range(n_steps), desc="  [all stems CTM]", leave=False):
+        audio_start = step_i * step_samples
+        audio_end   = audio_start + T_SAMPLES
+
+        ctx_list = []
+        for ctx in context_audios:
+            if audio_end > L:
+                chunk = torch.zeros(T_SAMPLES)
+                valid = L - audio_start
+                if valid > 0:
+                    chunk[:valid] = ctx[audio_start:L]
+            else:
+                chunk = ctx[audio_start:audio_end]
+            ctx_list.append(chunk)
+        ctx_batch = torch.stack(ctx_list, dim=0).to(device)
+        mixture_latent = cae.encode(ctx_batch).unsqueeze(1)    # (B, 1, 64, 64)
+
+        if pr_win_mul > 0:
+            zero_start = max(0, int(LATENT_SIZE * (1 - pr_win_mul * r)))
+            mixture_latent[:, :, :, zero_start:] = 0.0
+
+        if not hot_start and step_i == 0:
+            # Cold start: generate full window — source and mask both zero
+            source = torch.zeros(B, 1, LATENT_SIZE, LATENT_SIZE, device=device)
+            cur_mask = torch.zeros(B, 1, LATENT_SIZE, LATENT_SIZE, device=device)
+        else:
+            source = latent_buffer.clone()
+            cur_mask = mask
+
+        model_kwargs = {
+            "class_labels":   features,
+            "augment_labels": None,
+            "mixture":        mixture_latent,
+            "source":         source,
+            "mask":           cur_mask,
+        }
+
+        samples = karras_sample(
+            diffusion=diffusion_sampler,
+            model=latent_diffusion,
+            shape=(B, 1, LATENT_SIZE, LATENT_SIZE),
+            steps=num_steps,
+            model_kwargs=model_kwargs,
+            device=device,
+            clip_denoised=False,
+            sampler=ctm_sampler,
+            sigma_min=sigma_min,
+            sigma_max=sigma_max,
+            rho=rho,
+            ctm=False,
+            clip_output=False,
+            train=False,
+        )
+
+        # Update latent buffer with newly generated region
+        gen_start = int(LATENT_SIZE * (1 - r))
+        latent_buffer[:, :, :, gen_start:] = samples[:, :, :, gen_start:].clone()
+
+        samples_wav = cae.decode(samples.squeeze(1))   # (B, L_dec)
+        dec_len = samples_wav.shape[-1]
+        for i in range(B):
+            if decode_deficits[i] is None:
+                decode_deficits[i] = T_SAMPLES - dec_len
+            wav = samples_wav[i]
+            if dec_len < T_SAMPLES:
+                wav = torch.nn.functional.pad(wav, (0, T_SAMPLES - dec_len))
+            if not hot_start and step_i == 0:
+                generated_chunks[i].append(wav[:T_SAMPLES].cpu())
+                chunk_overlaps[i].append(0)
+            else:
+                overlap = decode_deficits[i] + XFADE_MARGIN
+                can_extend = (
+                    decode_deficits[i] > 0
+                    and step_samples + overlap <= dec_len
+                    and len(generated_chunks[i]) > 0
+                )
+                if can_extend:
+                    generated_chunks[i].append(wav[T_SAMPLES - step_samples - overlap:T_SAMPLES].cpu())
+                    chunk_overlaps[i].append(overlap)
+                else:
+                    generated_chunks[i].append(wav[T_SAMPLES - step_samples:T_SAMPLES].cpu())
+                    chunk_overlaps[i].append(0)
+        shift_tensor_data(latent_buffer, r)
+
+    # Assemble per-stem with crossfade (same logic as generate_all_stems_batched)
+    results = {}
+    for i, s in enumerate(stems):
+        full = generated_chunks[i][0]
+        for j in range(1, len(generated_chunks[i])):
+            chunk = generated_chunks[i][j]
+            ov    = chunk_overlaps[i][j]
+            if ov > 0:
+                fade    = torch.linspace(0, 1, XFADE_MARGIN)
+                blended = full[-ov:-ov + XFADE_MARGIN] * (1 - fade) + chunk[:XFADE_MARGIN] * fade
+                full    = torch.cat([full[:-ov], blended, chunk[XFADE_MARGIN:]])
+            else:
+                full = torch.cat([full, chunk])
+        results[s] = full
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Track processing and output saving
 # ---------------------------------------------------------------------------
 
@@ -470,11 +658,13 @@ def save_wav(path, audio, sr=SR):
     torchaudio.save(str(path), audio, sr)
 
 
-def process_track(track_dir, model, sampler, schedule, stems, r, w,
+def process_track(track_dir, generate_fn, stems, r, w,
                   num_steps, output_base, sample_counter, device,
                   max_duration=None, hot_start=False):
     """
     Generate all requested stems for one track, save in eval format.
+
+    generate_fn(mixture_audio, gt_audios, stems) -> dict {stem: waveform}
 
     Returns updated sample_counter.
     """
@@ -523,10 +713,7 @@ def process_track(track_dir, model, sampler, schedule, stems, r, w,
         return sample_counter + len(available_stems)
 
     # Generate all stems in one batched pass (~4x faster than sequential)
-    generated_dict = generate_all_stems_batched(
-        model, sampler, schedule, mixture_audio, gt_audios, available_stems,
-        r, w, num_steps, device, hot_start=hot_start,
-    )
+    generated_dict = generate_fn(mixture_audio, gt_audios, available_stems)
 
     # Save outputs per stem
     for stem_name in available_stems:
@@ -736,9 +923,30 @@ def main():
         print(f"Run:    {run_name}")
         print(f"Output: {output_base}")
 
-        model, sampler, schedule, sampling_steps, _ = load_model(
-            args.config, args.checkpoint, args.device
-        )
+        # Auto-detect model type: CTM/CD configs have diffusion.preconditioning
+        _raw_cfg = yaml.load(open(args.config, "r"), Loader=yaml.FullLoader)
+        is_ctm = "preconditioning" in _raw_cfg.get("diffusion", {})
+
+        if is_ctm:
+            latent_diffusion, diffusion_sampler, cae, sigma_min, sigma_max, rho, \
+                ctm_sampler, sampling_steps, _ = load_ctm_model(
+                    args.config, args.checkpoint, args.device
+                )
+            generate_fn = lambda mix, gt, stems: generate_all_stems_batched_ctm(
+                latent_diffusion, diffusion_sampler, cae, mix, gt, stems,
+                args.r, args.w, sampling_steps, args.device,
+                ctm_sampler, sigma_min, sigma_max, rho,
+                hot_start=args.hot_start,
+            )
+        else:
+            model, sampler, schedule, sampling_steps, _ = load_model(
+                args.config, args.checkpoint, args.device
+            )
+            generate_fn = lambda mix, gt, stems: generate_all_stems_batched(
+                model, sampler, schedule, mix, gt, stems,
+                args.r, args.w, sampling_steps, args.device,
+                hot_start=args.hot_start,
+            )
 
         test_dir = Path(args.test_data_dir)
         track_dirs = sorted([d for d in test_dir.iterdir() if d.is_dir()])
@@ -757,11 +965,11 @@ def main():
 
         for track_dir in tqdm(track_dirs, desc="Tracks"):
             sample_counter = process_track(
-                track_dir, model, sampler, schedule,
+                track_dir, generate_fn,
                 args.stems, args.r, args.w, sampling_steps,
                 output_base, sample_counter, args.device,
                 max_duration=args.max_duration,
-                hot_start=args.hot_start
+                hot_start=args.hot_start,
             )
 
         print(f"\nDone! Generated {sample_counter} samples in {output_base}")
