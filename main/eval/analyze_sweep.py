@@ -155,8 +155,8 @@ axes2 = [fig.add_subplot(gs_bot[0, c]) for c in range(3)]
 # -----------------------------------------------------------------------
 SPREAD_W0 = True   # spread w=0 points across x=[-IMM_W, +IMM_W] as an area; set False to stack at x=0
 IMM_W     = 2.5     # half-width of Immediate zone
-OFFLINE_X = -(IMM_W + 6.5)  # stand-in for −∞ (offline / max future visible)
-X_MIN     = -(IMM_W + 7.0)
+OFFLINE_X = -(IMM_W + 7.5)  # stand-in for −∞ (offline / max future visible)
+X_MIN     = -(IMM_W + 8.0)
 X_MAX     =  (IMM_W + 7.0)
 
 pc  = baselines["paper_curve"]
@@ -260,10 +260,11 @@ for ax, (key, ylabel, paper_vals, osg_val, opd_val, gt_val, rand_val) in zip(axe
     # Sort by position
     sorted_pairs = sorted(zip(all_ticks, all_labels))
     ax.set_xticks([p[0] for p in sorted_pairs])
-    ax.set_xticklabels([p[1] for p in sorted_pairs], fontsize=6.5, rotation=40, ha="right")
+    ax.set_xticklabels([p[1] for p in sorted_pairs], rotation=40, ha="right")
+    ax.tick_params(axis='x', labelsize=9)
     ax.set_xlim(X_MIN, X_MAX)
-    ax.set_xlabel("← net lookahead  T_s · r · w  (seconds) →")
-    ax.set_ylabel(ylabel)
+    ax.set_xlabel("← net lookahead  T_s · r · w  (seconds) →", fontsize=11)
+    ax.set_ylabel(ylabel, fontsize=10)
     # ax.set_title(f"{ylabel.split(' ')[0]}")
     ax.grid(True, alpha=0.3)
 
@@ -276,11 +277,11 @@ for ax, (key, ylabel, paper_vals, osg_val, opd_val, gt_val, rand_val) in zip(axe
     x_behind    = (X_MIN + (-IMM_W)) / 2
     x_immediate = 0.0
     x_ahead     = (IMM_W + X_MAX) / 2
-    ax.text(x_behind,    y_label, "Retrospective", fontsize=7, color="darkgreen",
+    ax.text(x_behind,    y_label, "Retrospective", fontsize=9, color="darkgreen",
             ha="center", va="bottom", alpha=0.85)
-    ax.text(x_immediate, y_label, "Immediate",       fontsize=7, color="gray",
+    ax.text(x_immediate, y_label, "Immediate",       fontsize=9, color="gray",
             ha="center", va="bottom", alpha=0.95)
-    ax.text(x_ahead,     y_label, "Look-ahead",  fontsize=7, color="firebrick",
+    ax.text(x_ahead,     y_label, "Look-ahead",  fontsize=9, color="firebrick",
             ha="center", va="bottom", alpha=0.85)
 
 # Shared legend below the bottom row
@@ -290,8 +291,8 @@ for h, l in zip(handles, lbls):
     if l not in seen:
         seen[l] = h
 fig.legend(seen.values(), seen.keys(),
-           loc="lower center", ncol=7, fontsize=8,
-           bbox_to_anchor=(0.5, 0.11), frameon=True)
+           loc="lower center", ncol=7, fontsize=10,
+           bbox_to_anchor=(0.5, 0.09), frameon=True)
 
 plt.savefig(OUT, dpi=150, bbox_inches="tight")
 print(f"Saved → {OUT}")
