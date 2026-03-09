@@ -1,0 +1,52 @@
+{
+  "source": "arXiv-2510.22105v1, k=1 sweep figures (values read from PDF figures)",
+  "notes": "t_f axis: negative=generate-ahead (less input visible), positive=generate-behind (more lookahead). Offline models plotted at t_f=inf.",
+
+  "paper_curve": {
+    "description": "Online Decoder streaming model (k=1) at various t_f values",
+    "t_f": [-4.0, -2.0, -1.0, -0.4, -0.2, 0.0, 0.2, 0.4, 1.0, 2.0, 4.0],
+    "cocola": [54.0, 54.0, 54.5, 56.5, 56.7, 59.8, 62.1, 62.4, 62.9, 62.9, 62.9],
+    "beat":   [0.187, 0.187, 0.187, 0.191, 0.194, 0.210, 0.270, 0.365, 0.385, 0.395, 0.390],
+    "fad":    [3.40, 3.31, 3.45, 3.37, 3.61, 3.19, 3.42, 3.29, 3.25, 3.19, 3.19]
+  },
+
+  "offline_stemgen": {
+    "cocola": 65.7,
+    "beat":   0.565,
+    "fad":    2.05
+  },
+  "offline_prefix_decoder": {
+    "cocola": 62.4,
+    "beat":   0.343,
+    "fad":    3.39
+  },
+
+  "cocola_overall": {
+    "ground_truth":       66.1,
+    "random_pairing":     52.1,
+    "offline_stemgen":    65.7,
+    "offline_prefix_dec": 62.4,
+    "online_tf_-4s":      54.0,
+    "online_tf_-1s":      54.5,
+    "online_tf_0":        59.8,
+    "online_tf_+1s":      62.9
+  },
+  "beat_alignment_f1": {
+    "ground_truth":       0.575,
+    "random_pairing":     0.210,
+    "offline_stemgen":    0.565,
+    "offline_prefix_dec": 0.343,
+    "online_tf_-4s":      0.187,
+    "online_tf_-1s":      0.187,
+    "online_tf_0":        0.210,
+    "online_tf_+1s":      0.385
+  },
+  "fad": {
+    "offline_stemgen":    2.05,
+    "offline_prefix_dec": 3.39,
+    "online_tf_-4s":      3.40,
+    "online_tf_-1s":      3.45,
+    "online_tf_0":        3.19,
+    "online_tf_+1s":      3.25
+  }
+}
