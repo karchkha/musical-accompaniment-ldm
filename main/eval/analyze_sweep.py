@@ -263,7 +263,7 @@ for ax, (key, ylabel, paper_vals, osg_val, opd_val, gt_val, rand_val) in zip(axe
     ax.set_xticklabels([p[1] for p in sorted_pairs], rotation=40, ha="right")
     ax.tick_params(axis='x', labelsize=9)
     ax.set_xlim(X_MIN, X_MAX)
-    ax.set_xlabel("← net lookahead  T_s · r · w  (seconds) →", fontsize=11)
+    ax.set_xlabel("← net lookahead  T · r · w  (seconds) →", fontsize=11)
     ax.set_ylabel(ylabel, fontsize=10)
     # ax.set_title(f"{ylabel.split(' ')[0]}")
     ax.grid(True, alpha=0.3)
