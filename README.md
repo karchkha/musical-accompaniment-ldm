@@ -29,7 +29,7 @@ We propose a framework for a real-time instrumental accompaniment and improvisat
 ---
 
 <p align="center">
-  <img src="figures/Real_time_graph.drawio.png" width="80%"/>
+  <img src="figures/Real_time_graph.drawio.png" width="95%"/>
 </p>
 
 Real-time accompaniment is formulated as a sliding-window generation process over a fixed-length context of duration *T*. The window advances by *T·r* at each step, where *r* controls the step size. Three regimes are supported: **retrospective** (w=−1), **immediate** (w=0), and **lookahead** (w=1) prediction.
@@ -37,7 +37,7 @@ Real-time accompaniment is formulated as a sliding-window generation process ove
 ### Latent Diffusion Model for Accompaniment
 
 <p align="center">
-  <img src="figures/latent.drawio.png" width="80%"/>
+  <img src="figures/latent.drawio.png" width="100%"/>
 </p>
 
 The accompaniment model encodes the input audio mixture into a latent representation via a pre-trained [Music2Latent](https://github.com/SonyCSLParis/music2latent) autoencoder, runs iterative denoising with a U-Net diffusion backbone (~257M parameters), and decodes the result back to audio. For real-time use the model can be run in **inpainting (lookahead) mode**, where partial context is provided as a condition.
@@ -60,9 +60,30 @@ The repo expects two directories at its root:
 
 ### 2. Dataset
 
-This project uses the [Slakh2100](http://www.slakh.com/) dataset (bass, drums, guitar, piano stems).
-Follow the download and setup instructions here:
-[We may need to give dataset demo from soemwere bease it is 44100 dataset]
+This project uses the [Slakh2100](http://www.slakh.com/) dataset processed at 44100 Hz (bass, drums, guitar, piano stems). A preparation script is provided that downloads the original Slakh2100 from Zenodo, groups stems by instrument class, creates mono WAV files and a mixture track, assigns train/validation/test splits by track number, and saves split metadata JSON files.
+
+**Full dataset (~100 GB, 44100 Hz):**
+```bash
+python main/prepare_dataset/prepare_slakh.py \
+    --splits train validation test \
+    --dest dataset/slakh2100_44100
+```
+
+**Quick test with BabySlakh (~880 MB, 16 kHz — for verifying the pipeline only):**
+```bash
+python main/prepare_dataset/prepare_slakh.py \
+    --splits train \
+    --dest dataset/slakh2100_44100_tiny \
+    --tiny
+```
+
+Tracks are assigned to splits by track number following the official Slakh2100 convention:
+
+| Split | Track range | Count |
+|---|---|---|
+| train | Track00001 – Track01500 | ~1500 |
+| validation | Track01501 – Track01875 | ~375 |
+| test | Track01876 – Track02100 | ~225 |
 
 ### 3. Conda Environment
 
