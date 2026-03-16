@@ -46,27 +46,6 @@ The accompaniment model encodes the input audio mixture into a latent representa
 
 To meet real-time latency constraints, the diffusion model is distilled into a consistency model (CD). The student is trained to directly map noisy inputs to consistent estimates in 1–2 steps, guided by an EMA teacher and a combined consistency + DSM loss.
 
----
-
-## Checkpoints
-
-Checkpoints are available on Zenodo: [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19045462.svg)](https://doi.org/10.5281/zenodo.19045462)
-
-Download and extract into the `lightning_logs/` directory:
-
-```bash
-cd lightning_logs
-wget https://zenodo.org/record/19045462/files/checkpoints.tar.gz
-tar -xzf checkpoints.tar.gz
-rm checkpoints.tar.gz
-```
-
-The archive contains the two checkpoints used by the server configs:
-- `GEN_diffusion_model/.../checkpoints/last.ckpt` — masked diffusion model
-- `GEN_CD/.../checkpoints/last.ckpt` — masked consistency distillation model
-
----
-
 ## Setup
 
 ### 1. Directory Structure
@@ -122,11 +101,60 @@ python main_audio_ctm.py --cfg configs/generation/CD/CD_latent_cond_gen_concat_t
 ```bash
 python main_audio_ctm.py --cfg configs/generation/CD/CD_latent_cond_gen_concat_inpaint_train.yaml
 ```
+---
+
+## Checkpoints
+
+Checkpoints are available on Zenodo: [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19045462.svg)](https://doi.org/10.5281/zenodo.19045462)
+
+Download and extract into the `lightning_logs/` directory:
+
+```bash
+cd lightning_logs
+wget https://zenodo.org/record/19045462/files/checkpoints.tar.gz
+tar -xzf checkpoints.tar.gz
+rm checkpoints.tar.gz
+```
+
+The archive contains the two checkpoints used by the server configs:
+- `GEN_diffusion_model/.../checkpoints/last.ckpt` — masked diffusion model
+- `GEN_CD/.../checkpoints/last.ckpt` — masked consistency distillation model
+
+---
 
 ## Evaluation
 
-[I will add evaluation run here]
+Evaluation is run via `main/eval/generate_eval.py`, which simulates the real-time sliding-window inpainting pipeline offline over the Slakh2100 test set and computes COCOLA, Beat F1, and FAD scores.
 
+> The evaluation pipeline is adapted from [Streaming Generation for Music Accompaniment](https://github.com/lukewys/stream-music-gen).
+
+### 1. Download Pretrained Evaluation Models
+
+**COCOLA** (accompaniment quality metric):
+Download the checkpoint from [this link](https://drive.google.com/file/d/1S-_OvnDwNFLNZD5BmI1Ouck_prutRVWZ/view) and place it at:
+```
+lightning_logs/stream_music_gen/eval_models/cocola_models/checkpoint-epoch=87-val_loss=0.00.ckpt
+```
+
+**Beat alignment** ([Beat This](https://github.com/CPJKU/beat_this)): weights are downloaded automatically on first run.
+
+Alternatively, you can use [Beat Transformer](https://github.com/zhaojw1998/Beat-Transformer) by passing `--method beat_transformer`. Download the checkpoint from [this link](https://github.com/zhaojw1998/Beat-Transformer/blob/main/checkpoint/fold_4_trf_param.pt) and place it at:
+```
+lightning_logs/stream_music_gen/eval_models/beat_transformer_models/fold_4_trf_param.pt
+```
+
+**FAD** (vggish / pann / clap / encodec): weights are downloaded automatically on first run by the `audioldm_eval` library.
+
+### 2. Run Evaluation
+
+```bash
+python main/eval/generate_eval.py \
+    --config configs/for_server/Diff_latent_cond_gen_concat_eval.yaml \
+    --r 0.25 --w 0 \
+    --num_samples 1024 \
+    --device cuda:0 \
+    --stems bass drums guitar piano
+```
 
 ---
 
