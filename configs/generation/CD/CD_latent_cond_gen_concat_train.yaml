@@ -1,108 +1,89 @@
 # @package _global_
 
-project_name: "CD"
-log_directory: "lightning_logs"
+project_name: GEN_CD
+log_directory: lightning_logs
 mode: train # train | test | validate_all
 
 id:
-  version: "CD_cond_separation_with_pre-trained_features_train"
+  version: "CD__AudioLDM_concat_mix_P=1.2_1.2_attn-8_16_32"
   name: ""
 
 model:
-  # _target_: main.module_base.Audio_DM_Model
-  # learning_rate: 1.e-4
-  # beta1: 0.9
-  # beta2: 0.99
   class_cond: True
-  separation: True
+  concat: True
+ 
+  img_resolution: 64                     # Image resolution at input/output.
+  in_channels: 2                       # Number of color channels at input.
+  out_channels: 1
+  label_dim: 4
+  augment_dim: 0  # Augmentation label dimensionality, 0 = no augmentation
 
-  # these are if you call conditional and serve classifier free guidance purpose
-  # embedding_features: 768       # this gets passed to -> context_embedding_features
-  # embedding_max_length: 64     # this gets passed to -> context_embedding_max_length
-  # embedding_mask_proba: 0.1
+  model_channels: 256  # Base multiplier for the number of channels
+  channel_mult: [1, 2, 2, 2]  # Per-resolution multipliers for the number of channels
+  channel_mult_emb: 4  # Multiplier for the dimensionality of the embedding vector
+  num_blocks: 4  # Number of residual blocks per resolution
+  attn_resolutions: [8,16,32]  # List of resolutions with self-attention
+  dropout: 0.10  # Dropout probability of intermediate activations
+  label_dropout: 0  # Dropout probability of class labels for classifier-free guidance
 
-  context_features: 4 # ???
-  # context_channels: [1, 512, 1024, 1024, 1024, 1024, 1024] ### Optional[Sequence[int]] = None, this decides use_context_channels (might be somethig usefull)
-  # context_embedding_features: 32 #Optional[int] = None,
-  pre_trained_mixture_feature_extractor: lightning_logs/MSDM/2024-08-06T00-20-47__Testing_audiodm_cond_separation_simple/checkpoints/last.ckpt
-
-  in_channels: 1
-  channels: 256
-  patch_factor: 16
-  patch_blocks: 1
-  resnet_groups: 8
-  kernel_multiplier_downsample: 2
-  kernel_sizes_init: [1, 3, 7]
-  multipliers: [1, 2, 4, 4, 4, 4, 4]
-  factors: [4, 4, 4, 2, 2, 2]
-  num_blocks: [2, 2, 2, 2, 2, 2]
-  attentions: [False, False, False, True, True, True]
-  attention_heads: 8
-  attention_features: 128
-  attention_multiplier: 2
-  use_nearest_upsample: False
-  use_skip_scale: True
-  use_attention_bottleneck: True
-  use_context_time: True
-  # diffusion_sigma_data: 0.2
-  # diffusion_dynamic_threshold: 0.0
-
-# diffusion_sigma_distribution:
-#   # _target_: audio_diffusion_pytorch_.LogNormalDistribution
-#   mean: -3.0
-#   std: 1.0
-
+  embedding_type: positional  # Timestep embedding type: 'positional' for DDPM++, 'fourier' for NCSN++
+  channel_mult_noise: 1  # Timestep embedding size: 1 for DDPM++, 2 for NCSN++
+  encoder_type: standard  # Encoder architecture: 'standard' for DDPM++, 'residual' for NCSN++
+  decoder_type: standard  # Decoder architecture: 'standard' for both DDPM++ and NCSN++
+  resample_filter: [1, 1]  # Resampling filter: [1,1] for DDPM++, [1,3,3,1] for NCSN++
+  num_heads: 1
 
 
 train_dataset:
   _target_: main.data.TracksDataset
-  audio_files_dir: "dataset/slakh2100/train"
-  sr: 22050
+  audio_files_dir: "dataset/slakh2100_44100/train"
+  sr: 44100
   channels: 1
-  min_duration: 12.0
+  min_duration: 6.1
   max_duration: 640.0
   aug_shift: True
-  sample_length: 262144
+  sample_length: 264600
   stems: ['bass', 'drums', 'guitar', 'piano']
 
 val_dataset:
   _target_: main.data.TracksDataset
-  audio_files_dir: "dataset/slakh2100/validation"
-  sr: 22050
+  audio_files_dir: "dataset/slakh2100_44100/validation"
+  sr: 44100
   channels: 1
-  min_duration: 12.0
+  min_duration: 6.1
   max_duration: 640.0
   aug_shift: False #True
-  sample_length: 262144
+  sample_length: 264600
   stems: ['bass', 'drums', 'guitar', 'piano']
 
 datamodule:
-  batch_size: 14 #50
+  batch_size: 32
   num_workers: 8
   pin_memory: True
 
 
 
 audio_samples_logger:
-  _target_: main.audio_ctm.ClassCondSeparateTrackSampleLoggerCTM
+  _target_: main.audio_ctm.ClassCond_GEN_2D_TrackSampleLoggerCTM
   num_items: 2 #10
   channels: 1
-  sampling_rate: 22050
-  length: 262144
+  img_resolution: 64
+  sampling_rate: 44100
+  length: 264600
   sampler:
     # - heun 
     - onestep
     - cm_multistep_cd 
-    # - exact
+    # - heun
     # - exact
   check_ctm_denoising_ability: True
-  clip_output: True
+  clip_output: False
   clip_denoised: False
   denoise_steps_to_log:
-    # - 18
+    # - 10
     - 1
     - 2
-    # - 1
+    # - 10
     # - 1
   stems: ['bass', 'drums', 'guitar', 'piano']
   models_to_log:
@@ -132,7 +113,7 @@ callbacks:
 
 trainer:
   accelerator: cuda
-  devices: [0] #,2] # Set `1` to train on GPU, `0` to train on CPU only, and `-1` to train on all GPUs, default `0`
+  devices: [0, 1, 2] # Set `1` to train on GPU, `0` to train on CPU only, and `-1` to train on all GPUs, default `0`
   precision: "bf16" # Precision used for tensors, default `32`
   min_epochs: 0
   max_epochs: 1000
@@ -171,7 +152,7 @@ diffusion:
     start_scales: 18                                                            # cifar10 18  | Imagenet 40
     end_scales: 18                                                              # cifar10 18  | Imagenet 40
     distill_steps_per_iter: 50000                                               # only if scale_mode == "progdist"
-    teacher_model_path: lightning_logs/MSDM/2024-08-07T16-07-08__Audiodm_cond_separation_with_pre-trained_features/checkpoints/epoch=239-val_loss=0.0000.ckpt 
+    teacher_model_path: lightning_logs/GEN_diffusion_model/2025-02-02T00-06-03__Diffusion_AudioLDM_concat_mix_P=1.2_1.2_attn-8_16_32/checkpoints/epoch=214-valid_loss=0.4414.ckpt
     model_path:                                                                 ## ??? not sure what is this
     training_mode: "cd"                                                        ## do not change this!!!
     num_heun_step: 17                                                           # cifar10 17 IMagenet 39
@@ -198,8 +179,8 @@ diffusion:
     # rho: 7
 
     sigma_min: 0.0001
-    sigma_max: 10.0 #15.0
-    sigma_data: 0.2
+    sigma_max: 80.0 #15.0
+    sigma_data: 1.0
     rho: 9
 
 
@@ -239,8 +220,8 @@ diffusion:
     diffusion_mult: 0.7
     diffusion_schedule_sampler: "halflognormal" # ???
     diffusion_training_frequency: 1.
-    p_mean: -3.0
-    p_std: 1.0
+    p_mean: -1.2
+    p_std: 1.2
 
     ### eval defaults ???
     large_log: False

@@ -1,0 +1,133 @@
+# @package _global_
+
+project_name: "GEN_diffusion_model"
+log_directory: "lightning_logs"
+mode: train # train | test | validate_all
+
+id:
+  version: Diffusion_AudioLDM_concat_mix_P=1.2_1.2_attn-8_16_32_train_masked_0_0.125_0.25
+  name: ""
+
+model:
+  _target_: main.module_base.Audio_LDM_Model
+  learning_rate: 1.e-4
+  beta1: 0.9
+  beta2: 0.99
+  class_cond: True
+  concat: True
+ 
+  img_resolution: 64                     # Image resolution at input/output.
+  in_channels: 2                       # Number of color channels at input.
+  out_channels: 1
+  label_dim: 4
+  augment_dim: 0  # Augmentation label dimensionality, 0 = no augmentation
+
+  model_channels: 256  # Base multiplier for the number of channels
+  channel_mult: [1, 2, 2, 2]  # Per-resolution multipliers for the number of channels
+  channel_mult_emb: 4  # Multiplier for the dimensionality of the embedding vector
+  num_blocks: 4  # Number of residual blocks per resolution
+  attn_resolutions: [8,16,32]  # List of resolutions with self-attention
+  dropout: 0.10  # Dropout probability of intermediate activations
+  label_dropout: 0  # Dropout probability of class labels for classifier-free guidance
+
+  embedding_type: positional  # Timestep embedding type: 'positional' for DDPM++, 'fourier' for NCSN++
+  channel_mult_noise: 1  # Timestep embedding size: 1 for DDPM++, 2 for NCSN++
+  encoder_type: standard  # Encoder architecture: 'standard' for DDPM++, 'residual' for NCSN++
+  decoder_type: standard  # Decoder architecture: 'standard' for both DDPM++ and NCSN++
+  resample_filter: [1, 1]  # Resampling filter: [1,1] for DDPM++, [1,3,3,1] for NCSN++
+  num_heads: 1
+
+  diffusion_sigma_data: 1.0
+  diffusion_dynamic_threshold: -1.0
+  inpaint_mask_ratios: [0, 0.125, 0.25] #, 0.1875, 0.25]
+  pr_win_mul: [2]
+
+
+diffusion_sigma_distribution:
+  _target_: audio_diffusion_pytorch_.LogNormalDistribution
+  mean: -1.2 #-3.0
+  std: 1.2 #1.0
+
+train_dataset:
+  _target_: main.data.TracksDataset
+  audio_files_dir: "dataset/slakh2100_44100/train"
+  sr: 44100
+  channels: 1
+  min_duration: 6.1
+  max_duration: 640.0
+  aug_shift: True
+  sample_length: 264600
+  stems: ['bass', 'drums', 'guitar', 'piano']
+
+val_dataset:
+  _target_: main.data.TracksDataset
+  audio_files_dir: "dataset/slakh2100_44100/validation"
+  sr: 44100
+  channels: 1
+  min_duration: 6.1
+  max_duration: 640.0
+  aug_shift: False #True
+  sample_length: 264600
+  stems: ['bass', 'drums', 'guitar', 'piano']
+
+datamodule:
+  batch_size: 64 #48
+  num_workers: 4
+  pin_memory: True
+
+
+
+audio_samples_logger:
+  _target_: main.module_base.ClassCond_Inpaint_2D_TrackSampleLogger #ClassCond_GEN_2D_TrackSampleLogger #ClassCond_GEN_TrackSampleLogger
+  num_items: 2
+  channels: 1
+  img_resolution: 64
+  sampling_rate: 44100
+  length: 264600
+  sampling_steps: 10
+  stems: ['bass', 'drums', 'guitar', 'piano']
+  
+  percentage: 0.25 #125
+  pr_win_mul: 2
+
+diffusion_sampler:
+  _target_: audio_diffusion_pytorch_.ADPM2Sampler
+  rho: 1.0
+  num_resamples: 2
+diffusion_schedule:
+  _target_: audio_diffusion_pytorch_.KarrasSchedule
+  sigma_min: 0.0001
+  sigma_max: 80.0
+  rho: 9.0
+
+
+
+callbacks:
+  rich_progress_bar:
+    _target_: pytorch_lightning.callbacks.RichProgressBar
+
+  model_summary:
+    _target_: pytorch_lightning.callbacks.RichModelSummary
+    max_depth: 1
+
+
+
+
+trainer:
+  accelerator: cuda
+  devices: [0, 1, 2] #, 2] #, 1] #, 1] #, 1, 2] #, 2] #, 1, 2, 3] # Set `1` to train on GPU, `0` to train on CPU only, and `-1` to train on all GPUs, default `0`
+  precision: "bf16" # Precision used for tensors, default `32`
+  min_epochs: 0
+  max_epochs: -1
+  enable_model_summary: False
+  log_every_n_steps: 10 # Logs metrics every N batches
+  check_val_every_n_epoch: null #20 # null
+  val_check_interval: #4000
+  limit_val_batches: 2 #21 #31
+  limit_train_batches: 
+  strategy: ddp
+  num_sanity_val_steps: 0
+  
+
+resume_from_checkpoint: lightning_logs/GEN_diffusion_model/2025-03-01T06-07-38__Diffusion_AudioLDM_concat_mix_P=1.2_1.2_attn-8_16_32_train_masked_0_0.125_0.25/checkpoints/last.ckpt
+# lightning_logs/GEN_diffusion_model/2025-02-02T00-06-03__Diffusion_AudioLDM_concat_mix_P=1.2_1.2_attn-8_16_32/checkpoints/epoch=214-valid_loss=0.4414.ckpt
