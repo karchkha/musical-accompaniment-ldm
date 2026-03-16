@@ -167,11 +167,11 @@ b   = baselines["beat_alignment_f1"]
 
 comparison_metrics = [
     ("cocola_both", "COCOLA score↑",  pc["cocola"], osg["cocola"], opd["cocola"],
-     c["ground_truth"], c["random_pairing"]),
+     c["our_ground_truth"], c["baseline_ground_truth"], c["random_pairing"]),
     ("beat",        "Beat alignment F1 ↑", pc["beat"],   osg["beat"],   opd["beat"],
-     b["ground_truth"], b["random_pairing"]),
+     b["our_ground_truth"], b["baseline_ground_truth"], b["random_pairing"]),
     ("fad",         "FAD score↓",     pc["fad"],    osg["fad"],    opd["fad"],
-     None, None),
+     None, None, None),
 ]
 
 # paper t_f → our zone-offset coordinate system:
@@ -194,7 +194,7 @@ if len(w0_r_vals) > 1:
     w0_xs_by_r = {r: ((r - r_min_w0) / span * 2 - 1) * IMM_W * 0.80
                   for r in w0_r_vals}
 
-for ax, (key, ylabel, paper_vals, osg_val, opd_val, gt_val, rand_val) in zip(axes2, comparison_metrics):
+for ax, (key, ylabel, paper_vals, osg_val, opd_val, our_gt_val, baseline_gt_val, rand_val) in zip(axes2, comparison_metrics):
     # Background shading: Generate Behind | Immediate | Generate Ahead
     ax.axvspan(X_MIN,  -IMM_W, alpha=0.12, color="green",      zorder=0)
     ax.axvspan(-IMM_W,  IMM_W, alpha=0.15, color="lightgray",  zorder=0)
@@ -212,10 +212,12 @@ for ax, (key, ylabel, paper_vals, osg_val, opd_val, gt_val, rand_val) in zip(axe
     ax.scatter([OFFLINE_X], [opd_val], marker="P", s=150, color="steelblue",
                zorder=5, label="Baseline Prefix Dec (offline)")
 
-    if gt_val is not None:
-        ax.axhline(gt_val,   color="k",    linestyle="--", linewidth=1.8, alpha=0.85,
-                   label="GT", zorder=3)
-        ax.axhline(rand_val, color="gray", linestyle="--", linewidth=1.8, alpha=0.85,
+    if our_gt_val is not None:
+        ax.axhline(our_gt_val,      color="k",          linestyle="--", linewidth=1.8, alpha=0.85,
+                   label="GT (Ours)", zorder=3)
+        ax.axhline(baseline_gt_val, color="royalblue",  linestyle="--", linewidth=1.8, alpha=0.85,
+                   label="GT (Baseline)", zorder=3)
+        ax.axhline(rand_val,        color="gray",        linestyle="--", linewidth=1.8, alpha=0.85,
                    label="Random Pairing", zorder=3)
 
     # Our model curve — zone-offset coordinates:
