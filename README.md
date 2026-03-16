@@ -50,7 +50,20 @@ To meet real-time latency constraints, the diffusion model is distilled into a c
 
 ## Checkpoints
 
-Please contact the authors for checkpoints.
+Checkpoints are available on Zenodo: [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19045462.svg)](https://doi.org/10.5281/zenodo.19045462)
+
+Download and extract into the `lightning_logs/` directory:
+
+```bash
+cd lightning_logs
+wget https://zenodo.org/record/19045462/files/checkpoints.tar.gz
+tar -xzf checkpoints.tar.gz
+rm checkpoints.tar.gz
+```
+
+The archive contains the two checkpoints used by the server configs:
+- `GEN_diffusion_model/.../checkpoints/last.ckpt` — masked diffusion model
+- `GEN_CD/.../checkpoints/last.ckpt` — masked consistency distillation model
 
 ---
 
