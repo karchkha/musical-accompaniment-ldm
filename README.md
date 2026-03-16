@@ -82,7 +82,7 @@ conda activate ctm_gen
 
 ```
 
-> **Note:** `audioldm_eval` must be installed manually after environment creation (see comment in `environment.yaml`).
+**Note:** `audioldm_eval` must be installed manually after environment creation (see comment in `environment.yaml`).
 
 ---
 
