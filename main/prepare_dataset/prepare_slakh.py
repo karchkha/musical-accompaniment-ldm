@@ -200,7 +200,7 @@ def main():
         raw_root = Path(args.raw_dir)
         tmp_dir = None
     else:
-        tmp_dir = tempfile.mkdtemp(dir="/data/reach/karchkhadze/tmp")
+        tmp_dir = tempfile.mkdtemp()
         raw_root = Path(tmp_dir)
         url = ZENODO_URL_TINY if args.tiny else ZENODO_URL
         filename = "babyslakh_16k.tar.gz" if args.tiny else "slakh2100_flac_redux.tar.gz"
