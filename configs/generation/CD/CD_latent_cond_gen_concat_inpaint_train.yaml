@@ -129,7 +129,7 @@ trainer:
   check_val_every_n_epoch: null
   val_check_interval: #1000
   limit_val_batches: 2 #55
-  limit_train_batches: 
+  limit_train_batches: 2
   strategy: ddp
   num_sanity_val_steps: 0
 

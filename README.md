@@ -1,24 +1,50 @@
-# Improving Source Extraction with Diffusion and Consistency Models
+# Towards Real-Time Musical Agents: Instrumental Accompaniment with Latent Diffusion Models and MAX/MSP
 
-<p align="center"></p>
 
-This repository houses the official PyTorch implementation of the paper titled **"Improving Source Extraction with Diffusion and Consistency Models"** on the Slakh2100 dataset. The paper was presented as an oral presentation at **NeurIPS 2024 Workshop Audio Imagination: AI-Driven Speech, Music, and Sound Generation**.
+
+This repository contains the official PyTorch implementation accompanying the paper **"Towards Real-Time Musical Agents: Instrumental Accompaniment with Latent Diffusion Models and MAX/MSP"**.
+
 
 - [arXiv](link here)  
-- [Demo Page](https://consistency-separation.github.io/)  
-- [OpenReview](https://openreview.net/forum?id=nskR7tWE6z)  
+- [Demo Page] [Demo page](https://consistency-separation.github.io/)
 
-**Contacts**:
-- Tornike Karchkhadze: [tkarchkhadze@ucsd.edu](mailto:tkarchkhadze@ucsd.edu)  
-- Mohammad Rasool Izadi: [russell_izadi@bose.com](mailto:russell_izadi@bose.com)
-
-*The work was done during Tornike's internship at Bose Corporation.
+**Authors**: Tornike Karchkhadze, Shlomo Dubnov — University of California San Diego
 
 ---
 
 ## Abstract
 
-In this work, we integrate a score-matching diffusion model into a standard deterministic architecture for time-domain musical source extraction. To address the typically slow iterative sampling process of diffusion models, we apply consistency distillation and reduce the sampling process to a single step, achieving performance comparable to that of diffusion models. With two or more steps, the model even surpasses diffusion models. Trained on the Slakh2100 dataset for four instruments (bass, drums, guitar, and piano), our model demonstrates significant improvements across objective metrics compared to baseline methods.
+We propose a framework for a real-time instrumental accompaniment and improvisation system. The project is twofold: we develop a diffusion-based generative model for musical accompaniment, and build a hybrid system that enables real-time interaction with this model by combining MAX/MSP with a remote Python server. Our latent diffusion model is trained with lookahead conditioning and deployed on a Python server. The MAX/MSP frontend handles real-time audio input, buffering, and playback, and communicates with the server via OSC messages. This setup enables a musician to plug in and play live within MAX/MSP, while the ML model listens and responds with complementary instrumental parts.
+
+---
+
+## System Overview
+
+### Real-Time Sliding-Window Protocol
+
+<p align="center">
+  <img src="figures/Real_time_MAX.drawio.png" width="40%"/>
+</p>
+
+---
+
+<p align="center">
+  <img src="figures/Real_time_graph.drawio.png" width="80%"/>
+</p>
+
+Real-time accompaniment is formulated as a sliding-window generation process over a fixed-length context of duration *T*. The window advances by *T·r* at each step, where *r* controls the step size. Three regimes are supported: **retrospective** (w=−1), **immediate** (w=0), and **lookahead** (w=1) prediction.
+
+### Latent Diffusion Model for Accompaniment
+
+<p align="center">
+  <img src="figures/latent.drawio.png" width="80%"/>
+</p>
+
+The accompaniment model encodes the input audio mixture into a latent representation via a pre-trained [Music2Latent](https://github.com/SonyCSLParis/music2latent) autoencoder, runs iterative denoising with a U-Net diffusion backbone (~257M parameters), and decodes the result back to audio. For real-time use the model can be run in **inpainting (lookahead) mode**, where partial context is provided as a condition.
+
+### Consistency Distillation for Fast Inference
+
+To meet real-time latency constraints, the diffusion model is distilled into a consistency model (CD). The student is trained to directly map noisy inputs to consistent estimates in 1–2 steps, guided by an EMA teacher and a combined consistency + DSM loss.
 
 ---
 
@@ -28,87 +54,100 @@ Please contact the authors for checkpoints.
 
 ---
 
-## Prerequisites
+## Setup
 
-### 1. Dataset
+### 1. Directory Structure
 
-In this project, the Slakh2100 dataset is used.  
-Please follow the instructions for data download and setup provided here:  
-[Slakh2100 Data Setup](https://github.com/gladia-research-group/multi-source-diffusion-models/blob/main/data/README.md)
+The repo expects two directories at its root:
 
-### 2. Conda Environment Setup
+| Path | Purpose |
+|------|---------|
+| `dataset/` | Slakh2100 dataset root |
+| `lightning_logs/` | Training checkpoints and logs (written by PyTorch Lightning) |
+
+
+### 2. Dataset
+
+This project uses the [Slakh2100](http://www.slakh.com/) dataset (bass, drums, guitar, piano stems).
+Follow the download and setup instructions here:
+[We may need to give dataset demo from soemwere bease it is 44100 dataset]
+
+### 3. Conda Environment
 
 This repository uses Python 3.10.
 
 ```bash
-# Create environment
 conda env create -f environment.yaml
+conda activate ctm_gen
 
-# Activate environment
-conda activate ctm
 ```
+
+> **Note:** `audioldm_eval` must be installed manually after environment creation (see comment in `environment.yaml`).
 
 ---
 
 ## Training
 
-### Deterministic Model Training
+### Accompaniment Generation Models (LDM)
+
+**Maskless diffusion model:**
 ```bash
-python train_audio_simple.py --cfg configs/deterministic_model/cond_separation_simple_no_diff_train.yaml
+python train_audio.py --cfg configs/generation/Diff_latent_cond_gen_concat_train.yaml
 ```
 
-### Diffusion Model Training
+**Masked diffusion model (with lookahead support):**
 ```bash
-python train_audio.py --cfg configs/diffusion_model/train_audiodm_cond_separation_unet_every_layer_pre_trained_feature_extractor.yaml
+python train_audio.py --cfg configs/generation/Diff_latent_cond_gen_concat_inpaint_train.yaml
 ```
 
-### Consistency Model Training
+**Maskless consistency distillation model:**
 ```bash
-python main_audio_ctm.py --cfg configs/consistency_model/CD_sourse_extraction_unet_every_layer_pre_trained_feature_extractor_train.yaml
+python main_audio_ctm.py --cfg configs/generation/CD/CD_latent_cond_gen_concat_train.yaml
 ```
+
+**Masked consistency distillation model (with lookahead support):**
+```bash
+python main_audio_ctm.py --cfg configs/generation/CD/CD_latent_cond_gen_concat_inpaint_train.yaml
+```
+
+## Evaluation
+
+[I will add evaluation run here]
+
 
 ---
 
-## Sampling and Evaluation
+## MAX/MSP Integration (Real-Time Server)
 
-### Deterministic Model Evaluation
+`server.py` (diffusion model) and `server_CD.py` (consistency distillation model) expose an OSC interface for real-time integration with MAX/MSP.
+
+Form Max MAX/MSP we will be sending corespoing commands: 
+
+**Run the diffusion server:**
 ```bash
-python train_audio_simple.py --cfg configs/deterministic_model/cond_separation_simple_no_diff_eval.yaml
+python server.py --serverport 7000 --clientport 8000 --server_ip <YOUR_SERVER_IP>
 ```
 
-### Diffusion Model Evaluation
+**Run the CD server:**
 ```bash
-python train_audio.py --cfg configs/diffusion_model/Diff_cond_separation_unet_every_layer_pre_trained_feature_extractor_eval_MSDMSampler.yaml
-```
-
-### Consistency Model Evaluation
-```bash
-python main_audio_ctm.py --cfg configs/consistency_model/CD_sourse_extraction_unet_every_layer_pre_trained_feature_extractor_eval.yaml
+python server_CD.py --serverport 7000 --clientport 8000 --server_ip <YOUR_SERVER_IP>
 ```
 
 ---
 
 ## Acknowledgments
 
-This codebase builds upon and integrates ideas and components from the following repositories:
+This codebase builds upon the following repositories:
 
-- [Sony CTM](https://github.com/sony/ctm)  
-- [Multi-Source Diffusion Models](https://github.com/gladia-research-group/multi-source-diffusion-models)  
-- [Audio Diffusion PyTorch (Version 0.43)](https://github.com/archinetai/audio-diffusion-pytorch)  
+- [Sony CTM](https://github.com/sony/ctm)
+- [Multi-Source Diffusion Models](https://github.com/gladia-research-group/multi-source-diffusion-models)
+- [Audio Diffusion PyTorch (v0.43)](https://github.com/archinetai/audio-diffusion-pytorch)
 
-We greatly appreciate the authors of these repositories for their contributions to the field and for making their work publicly available.
-
---- 
+---
 
 ## Citations
 
+If you use this work, please cite:
+
 ```bibtex
-@inproceedings{
-karchkhadze2024improving,
-title={Improving Source Extraction with Diffusion and Consistency Models},
-author={Tornike Karchkhadze and Mohammad Rasool Izadi and Shuo Zhang},
-booktitle={Audio Imagination: NeurIPS 2024 Workshop AI-Driven Speech, Music, and Sound Generation},
-year={2024},
-url={https://openreview.net/forum?id=nskR7tWE6z}
-}
 ```
