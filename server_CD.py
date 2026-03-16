@@ -688,7 +688,6 @@ if __name__ == "__main__":
     ### client
     client_port=str(args.clientport)
     client = udp_client.SimpleUDPClient(args.client_ip, args.clientport)
-    # client = udp_client.SimpleUDPClient("137.110.37.40", args.clientport)
     print(f"\nWill be comunicating with client on {args.client_ip}:{args.clientport}")
     
     # client = udp_client.SimpleUDPClient("127.0.0.1", args.clientport)
