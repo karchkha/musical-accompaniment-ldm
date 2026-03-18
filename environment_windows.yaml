@@ -1,0 +1,76 @@
+name: ctm_gen
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - mpi4py
+  - pip:
+    # Core torch (CUDA 12.1, compatible with Windows driver CUDA 12.5)
+    - --extra-index-url https://download.pytorch.org/whl/cu121
+    - setuptools==69.5.1          # pkg_resources removed in setuptools>=70
+    - torch==2.4.1+cu121
+    - torchaudio==2.4.1+cu121
+    - torchvision==0.19.1+cu121
+    # triton: no official Windows support — skipped
+    # triton==3.0.0
+
+    # flash-attn: no Windows wheel available — skipped
+    # flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.6.3/flash_attn-2.6.3%2Bcu118torch2.4cxx11abiFALSE-cp310-cp310-linux_x86_64.whl
+    # xformers: no pre-built Windows wheel on PyPI for this version — skipped
+    # xformers==0.0.28.post1
+
+    # Training / Lightning
+    - pytorch-lightning==2.3.1
+    - lightning-utilities
+    - torchmetrics
+
+    # Audio
+    - librosa==0.11.0
+    - soundfile
+    - resampy
+    - soxr
+    - music2latent==0.1.6     # pin: inference depends on exact version
+    - musdb
+    - stempeg
+    - av==13.0.0
+
+    # ML / Science
+    - numpy
+    - scipy
+    - scikit-learn
+    - einops==0.8.0            # pin: used in model forward passes
+    - einops-exts==0.0.4       # pin: matches einops 0.8.0
+
+    - scikit-image
+
+    # NOTE: audioldm_eval must be installed manually after env creation (MySQL-python dep breaks):
+    #   pip install --no-deps ssr-eval
+    #   pip install --no-deps "audioldm-eval @ git+https://github.com/haoheliu/audioldm_eval.git"
+
+    # Experiment tracking
+    - wandb
+    - pyyaml
+    - tqdm
+    - rich==13.7.1            # pin: rich 14.x breaks PL 2.3.1 RichProgressBar
+
+    # Misc
+    - python-osc==1.8.3
+    - blobfile==2.1.1
+    - lmdb
+    - pandas
+    - matplotlib
+    - pillow
+    - requests
+    - huggingface-hub==0.36.2        # pin: matched by transformers==4.49.0
+    - transformers==4.49.0           # pin: >=4.50 adds check_torch_load_is_safe() which blocks torch<2.6 (CVE-2025-32434)
+
+    # Eval dependencies
+    - pqdm
+    - descript-audiotools==0.7.2
+    - frechet_audio_distance @ git+https://github.com/maswang32/frechet-audio-distance
+    - cocola @ git+https://github.com/maswang32/cocola-stem-gen.git@main#egg=cocola
+    - beat_transformer @ git+https://github.com/lancelotblanchard/beat-transformer-online-stem-gen.git@f9944f10ac1e3a79c117ab6f5a8f40ac7e4414e8#egg=beat_transformer
+    - madmom @ git+https://github.com/CPJKU/madmom.git@27f032e
+    - beat_this @ https://github.com/CPJKU/beat_this/archive/main.zip

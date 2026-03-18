@@ -89,13 +89,26 @@ Tracks are assigned to splits by track number following the official Slakh2100 c
 
 This repository uses Python 3.10.
 
+**Linux (recommended):**
 ```bash
 conda env create -f environment.yaml
 conda activate ctm_gen
-
 ```
 
-**Note:** `audioldm_eval` must be installed manually after environment creation (see comment in `environment.yaml`).
+**Windows:**
+```bash
+conda env create -f environment_windows.yaml
+conda activate ctm_gen
+```
+
+> On Windows, `flash-attn`, `xformers`, and `triton` are not available as pre-built wheels and are skipped. The code falls back to `torch.nn.functional.scaled_dot_product_attention` automatically.
+
+**Post-install step (all platforms):** `audioldm_eval` must be installed manually because its `MySQL-python` dependency breaks with a standard `pip install`. Run after activating the environment:
+
+```bash
+pip install --no-deps ssr-eval
+pip install --no-deps "audioldm-eval @ git+https://github.com/haoheliu/audioldm_eval.git"
+```
 
 ---
 

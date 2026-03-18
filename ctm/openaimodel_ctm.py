@@ -7,9 +7,13 @@ import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
-from flash_attn.flash_attn_interface import flash_attn_varlen_qkvpacked_func
-# from flash_attn.flash_attn_interface import flash_attn_unpadded_qkvpacked_func as flash_attn_varlen_qkvpacked_func
-from flash_attn.bert_padding import unpad_input, pad_input
+try:
+    from flash_attn.flash_attn_interface import flash_attn_varlen_qkvpacked_func
+    # from flash_attn.flash_attn_interface import flash_attn_unpadded_qkvpacked_func as flash_attn_varlen_qkvpacked_func
+    from flash_attn.bert_padding import unpad_input, pad_input
+    FLASH_ATTN_AVAILABLE = True
+except ImportError:
+    FLASH_ATTN_AVAILABLE = False
 
 from .nn import (
     checkpoint,
@@ -397,49 +401,74 @@ class FlashAttention(nn.Module):
         ---------
             qkv: The tensor containing the query, key, and value. (B, S, 3, H, D) if key_padding_mask is None
                 if unpadded: (nnz, 3, h, d)
-            key_padding_mask: a bool tensor of shape (B, S)
+            key_padding_mask: a bool tensor of shape (B, S), True = valid token
         """
         assert not need_weights
-        
-        qkv = qkv.to(th.float16) ### TODO: this is not a perfect solution
-        
-        assert qkv.dtype in [th.float16, th.bfloat16]
-        assert qkv.is_cuda
 
-        if cu_seqlens is None:
-            batch_size = qkv.shape[0]
-            seqlen = qkv.shape[1]
-            if key_padding_mask is None:
-                qkv = rearrange(qkv, 'b s ... -> (b s) ...')
-                max_s = seqlen
-                cu_seqlens = th.arange(0, (batch_size + 1) * seqlen, step=seqlen, dtype=th.int32,
-                                          device=qkv.device)
+        qkv = qkv.to(th.float16) ### TODO: this is not a perfect solution
+
+        if FLASH_ATTN_AVAILABLE:
+            assert qkv.dtype in [th.float16, th.bfloat16]
+            assert qkv.is_cuda
+
+            if cu_seqlens is None:
+                batch_size = qkv.shape[0]
+                seqlen = qkv.shape[1]
+                if key_padding_mask is None:
+                    qkv = rearrange(qkv, 'b s ... -> (b s) ...')
+                    max_s = seqlen
+                    cu_seqlens = th.arange(0, (batch_size + 1) * seqlen, step=seqlen, dtype=th.int32,
+                                              device=qkv.device)
+                    output = flash_attn_varlen_qkvpacked_func(
+                        qkv, cu_seqlens, max_s, self.dropout_p if self.training else 0.0,
+                        softmax_scale=self.softmax_scale, causal=causal
+                    )
+                    output = rearrange(output, '(b s) ... -> b s ...', b=batch_size)
+                else:
+                    nheads = qkv.shape[-2]
+                    x = rearrange(qkv, 'b s three h d -> b s (three h d)')
+                    x_unpad, indices, cu_seqlens, max_s = unpad_input(x, key_padding_mask)
+                    x_unpad = rearrange(x_unpad, 'nnz (three h d) -> nnz three h d', three=3, h=nheads)
+                    output_unpad = flash_attn_varlen_qkvpacked_func(
+                        x_unpad, cu_seqlens, max_s, self.dropout_p if self.training else 0.0,
+                        softmax_scale=self.softmax_scale, causal=causal
+                    )
+                    output = rearrange(pad_input(rearrange(output_unpad, 'nnz h d -> nnz (h d)'),
+                                                indices, batch_size, seqlen),
+                                    'b s (h d) -> b s h d', h=nheads)
+            else:
+                assert max_s is not None
                 output = flash_attn_varlen_qkvpacked_func(
                     qkv, cu_seqlens, max_s, self.dropout_p if self.training else 0.0,
                     softmax_scale=self.softmax_scale, causal=causal
                 )
-                output = rearrange(output, '(b s) ... -> b s ...', b=batch_size)
-            else:
-                nheads = qkv.shape[-2]
-                x = rearrange(qkv, 'b s three h d -> b s (three h d)')
-                x_unpad, indices, cu_seqlens, max_s = unpad_input(x, key_padding_mask)
-                x_unpad = rearrange(x_unpad, 'nnz (three h d) -> nnz three h d', three=3, h=nheads)
-                output_unpad = flash_attn_varlen_qkvpacked_func(
-                    x_unpad, cu_seqlens, max_s, self.dropout_p if self.training else 0.0,
-                    softmax_scale=self.softmax_scale, causal=causal
-                )
-                output = rearrange(pad_input(rearrange(output_unpad, 'nnz h d -> nnz (h d)'),
-                                            indices, batch_size, seqlen),
-                                'b s (h d) -> b s h d', h=nheads)
+
         else:
-            assert max_s is not None
-            output = flash_attn_varlen_qkvpacked_func(
-                qkv, cu_seqlens, max_s, self.dropout_p if self.training else 0.0,
-                softmax_scale=self.softmax_scale, causal=causal
+            # PyTorch SDPA fallback — used when flash_attn is unavailable (e.g. Windows)
+            assert cu_seqlens is None, "varlen (cu_seqlens) mode requires flash_attn"
+            # qkv: (B, S, 3, H, D) — split and reshape to (B, H, S, D) for SDPA
+            q = rearrange(qkv[:, :, 0], 'b s h d -> b h s d')
+            k = rearrange(qkv[:, :, 1], 'b s h d -> b h s d')
+            v = rearrange(qkv[:, :, 2], 'b s h d -> b h s d')
+
+            attn_mask = None
+            if key_padding_mask is not None:
+                # key_padding_mask: True = valid token; convert to additive float mask
+                attn_mask = th.zeros(
+                    qkv.shape[0], 1, 1, qkv.shape[1], dtype=qkv.dtype, device=qkv.device
+                ).masked_fill(~key_padding_mask[:, None, None, :], float('-inf'))
+
+            output = F.scaled_dot_product_attention(
+                q, k, v,
+                attn_mask=attn_mask,
+                dropout_p=self.dropout_p if self.training else 0.0,
+                is_causal=causal,
+                scale=self.softmax_scale,
             )
-        
+            output = rearrange(output, 'b h s d -> b s h d')
+
         output = output.to(th.float32) ### TODO: this is not a perfect solution
-        
+
         return output, None
 
 
