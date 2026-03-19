@@ -11,6 +11,8 @@ and gives their PID. For each process type, 'kill XXXX' where XXXX is PID.
 import argparse
 import numpy as np
 import torch
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
 import matplotlib
 matplotlib.use("Agg")  # Use a non-GUI backend
 import matplotlib.pyplot as plt
@@ -207,7 +209,7 @@ def load_network(unused_addr):
     else:
         print("No checkpoint path provided. Running model with random initialization.")
 
-    latent_diffusion.to("cuda:0")
+    latent_diffusion.to(device)
 
     ### Init Sampler
     diffusion_sampler = instantiate_from_config(cfg.diffusion_sampler)
@@ -216,7 +218,7 @@ def load_network(unused_addr):
     steps=cfg.audio_samples_logger.sampling_steps
 
     # MSAProc = MultiSourceAudioProcessor(cfg)
-    mask = create_temporal_mask(mask, mask_ratio = percentage).to("cuda:0")
+    mask = create_temporal_mask(mask, mask_ratio = percentage).to(device)
     
     latent = latent_diffusion.CAE.encode(tensor).unsqueeze(1) 
 
@@ -665,7 +667,7 @@ dispatcher.map("/predict", predict)
 
 # OSC Server Setup
 def start_server(ip, port):
-    print(f"\nStarting server on {ip}:{port}")
+    print(f"\nStarting server on {ip}:{port} | device: {device}")
     server = osc_server.ThreadingOSCUDPServer((ip, port), dispatcher)
     server.max_packet_size = 65536
     print("Server is running!\n")
@@ -677,11 +679,15 @@ def start_server(ip, port):
 if __name__ == "__main__":
     seed_everything(1234)
     parser = argparse.ArgumentParser()
+    parser.add_argument("--device", default=None, help="Device to use (e.g. cuda, cuda:1, cpu). Defaults to cuda if available.")
     parser.add_argument("--server_ip", default="0.0.0.0", help="The IP address to listen on")
     parser.add_argument("--client_ip", default="127.0.0.1", help="The IP address of client. 127.0.0.1 if the cilent and server are on the same device")
     parser.add_argument("--serverport", type=int, default=7000, help="The port to listen on")
     parser.add_argument("--clientport", type=int, default=8000, help="The client port")
     args = parser.parse_args()
+
+    if args.device is not None:
+        device = args.device
 
     ### client
     client_port=str(args.clientport)
