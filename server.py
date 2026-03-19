@@ -9,8 +9,12 @@ and gives their PID. For each process type, 'kill XXXX' where XXXX is PID.
 
 
 import argparse
+import warnings
 import numpy as np
 import torch
+
+warnings.filterwarnings("ignore", category=FutureWarning, message=".*weights_only.*")
+warnings.filterwarnings("ignore", category=UserWarning, message=".*flash attention.*")
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 import matplotlib
@@ -203,7 +207,7 @@ def load_network(unused_addr):
     checkpoint_path = cfg.resume_from_checkpoint
     if checkpoint_path:
         print(f"Loading checkpoint from {checkpoint_path}...")
-        checkpoint = torch.load(checkpoint_path, map_location="cpu")  # Load safely on CPU
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         latent_diffusion.load_state_dict(checkpoint["state_dict"], strict=False)  # Load model weights
         print("Checkpoint loaded successfully!")
     else:
