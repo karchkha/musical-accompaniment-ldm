@@ -806,6 +806,9 @@ class SampleLogger(Callback):
         base_dir = os.path.dirname(trainer.checkpoint_callback.dirpath)
         wandb_logger = get_wandb_logger(trainer).experiment
         evaluator = EvaluationHelper(sampling_rate=16000, device=pl_module.device)
+        if pl_module.device.type == "mps":
+            # VGGish (used by audioldm_eval for FAD) doesn't support MPS — keep it on CPU
+            evaluator.frechet.model = evaluator.frechet.model.cpu()
 
         sampling_steps = self.sampling_steps if isinstance(self.sampling_steps, list) else [self.sampling_steps]
 
@@ -1694,6 +1697,9 @@ class ClassCond_GEN_TrackSampleLogger(ClassCondSeparateTrackSampleLogger):
         base_dir = os.path.dirname(trainer.checkpoint_callback.dirpath)
         wandb_logger = get_wandb_logger(trainer).experiment
         evaluator = EvaluationHelper(sampling_rate=16000, device=pl_module.device)
+        if pl_module.device.type == "mps":
+            # VGGish (used by audioldm_eval for FAD) doesn't support MPS — keep it on CPU
+            evaluator.frechet.model = evaluator.frechet.model.cpu()
 
         sampling_steps = self.sampling_steps if isinstance(self.sampling_steps, list) else [self.sampling_steps]
 

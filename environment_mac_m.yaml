@@ -5,22 +5,16 @@ channels:
 dependencies:
   - python=3.10
   - pip
-  - mpi4py
   - pip:
-    # Core torch (CUDA 12.1, compatible with Windows driver CUDA 12.5)
-    - --extra-index-url https://download.pytorch.org/whl/cu121
     - setuptools==69.5.1          # pkg_resources removed in setuptools>=70
     - gdown                       # for downloading COCOLA eval checkpoint from Google Drive
-    - torch==2.4.1+cu121
-    - torchaudio==2.4.1+cu121
-    - torchvision==0.19.1+cu121
-    # triton: no official Windows support — skipped
-    # triton==3.0.0
 
-    # flash-attn: no Windows wheel available — skipped
-    # flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.6.3/flash_attn-2.6.3%2Bcu118torch2.4cxx11abiFALSE-cp310-cp310-linux_x86_64.whl
-    # xformers: no pre-built Windows wheel on PyPI for this version — skipped
-    # xformers==0.0.28.post1
+    # Core torch (CPU/MPS — no CUDA on Mac)
+    - torch==2.4.1
+    - torchaudio==2.4.1
+    - torchvision==0.19.1
+
+    # NOTE: triton, flash-attn, xformers are CUDA-only — skip on Mac
 
     # Training / Lightning
     - pytorch-lightning==2.3.1
@@ -44,9 +38,8 @@ dependencies:
     - einops==0.8.0            # pin: used in model forward passes
     - einops-exts==0.0.4       # pin: matches einops 0.8.0
 
-    - scikit-image
-
     # NOTE: audioldm_eval must be installed manually after env creation (MySQL-python dep breaks):
+    #   pip install scikit-image
     #   pip install --no-deps ssr-eval
     #   pip install --no-deps "audioldm-eval @ git+https://github.com/haoheliu/audioldm_eval.git"
 
@@ -69,6 +62,7 @@ dependencies:
 
     # Eval dependencies
     - pqdm
+    - scikit-image
     - descript-audiotools==0.7.2
     - frechet_audio_distance @ git+https://github.com/maswang32/frechet-audio-distance
     - cocola @ git+https://github.com/maswang32/cocola-stem-gen.git@main#egg=cocola

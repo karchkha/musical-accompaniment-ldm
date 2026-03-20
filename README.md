@@ -103,11 +103,18 @@ conda activate ctm_gen
 
 > On Windows, `flash-attn`, `xformers`, and `triton` are not available as pre-built wheels and are skipped. The code falls back to `torch.nn.functional.scaled_dot_product_attention` automatically.
 
-**Post-install step (all platforms):** `audioldm_eval` must be installed manually because its `MySQL-python` dependency breaks with a standard `pip install`. Run after activating the environment:
+**Mac (Apple Silicon):**
+```bash
+conda env create -f environment_mac_m.yaml
+conda activate ctm_gen
+```
+
+
+**Post-install step (all platforms):** `audioldm_eval` must be installed manually and a specific veriosn. Run after activating the environment:
 
 ```bash
 pip install --no-deps ssr-eval
-pip install --no-deps "audioldm-eval @ git+https://github.com/haoheliu/audioldm_eval.git"
+pip install --no-deps "audioldm-eval @ git+https://github.com/haoheliu/audioldm_eval.git@8dc07ee7c42f9dc6e295460a1034175a0d49b436"
 ```
 
 ---
@@ -165,16 +172,18 @@ Evaluation is run via `main/eval/generate_eval.py`, which simulates the real-tim
 ### 1. Download Pretrained Evaluation Models
 
 **COCOLA** (accompaniment quality metric):
-Download the checkpoint from [this link](https://drive.google.com/file/d/1S-_OvnDwNFLNZD5BmI1Ouck_prutRVWZ/view) and place it at:
-```
-lightning_logs/stream_music_gen/eval_models/cocola_models/checkpoint-epoch=87-val_loss=0.00.ckpt
+```bash
+mkdir -p lightning_logs/stream_music_gen/eval_models/cocola_models
+gdown 1S-_OvnDwNFLNZD5BmI1Ouck_prutRVWZ -O lightning_logs/stream_music_gen/eval_models/cocola_models/checkpoint-epoch=87-val_loss=0.00.ckpt
 ```
 
 **Beat alignment** ([Beat This](https://github.com/CPJKU/beat_this)): weights are downloaded automatically on first run.
 
-Alternatively, you can use [Beat Transformer](https://github.com/zhaojw1998/Beat-Transformer) by passing `--method beat_transformer`. Download the checkpoint from [this link](https://github.com/zhaojw1998/Beat-Transformer/blob/main/checkpoint/fold_4_trf_param.pt) and place it at:
-```
-lightning_logs/stream_music_gen/eval_models/beat_transformer_models/fold_4_trf_param.pt
+Alternatively, you can use [Beat Transformer](https://github.com/zhaojw1998/Beat-Transformer) by passing `--method beat_transformer`:
+```bash
+mkdir -p lightning_logs/stream_music_gen/eval_models/beat_transformer_models
+wget -O lightning_logs/stream_music_gen/eval_models/beat_transformer_models/fold_4_trf_param.pt \
+  https://github.com/zhaojw1998/Beat-Transformer/raw/main/checkpoint/fold_4_trf_param.pt
 ```
 
 **FAD** (vggish / pann / clap / encodec): weights are downloaded automatically on first run by the `audioldm_eval` library.
@@ -187,6 +196,16 @@ python main/eval/generate_eval.py \
     --r 0.25 --w 0 \
     --num_samples 1024 \
     --device cuda:0 \
+    --stems bass drums guitar piano
+```
+
+**Mac (Apple Silicon):**
+```bash
+PYTORCH_ENABLE_MPS_FALLBACK=1 python main/eval/generate_eval.py \
+    --config configs/for_server/Diff_latent_cond_gen_concat_eval.yaml \
+    --r 0.25 --w 0 \
+    --num_samples 1024 \
+    --device mps \
     --stems bass drums guitar piano
 ```
 

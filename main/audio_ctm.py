@@ -753,6 +753,9 @@ class UncondSampleLogger(Callback):
         base_dir = os.path.dirname(trainer.checkpoint_callback.dirpath)
         wandb_logger = get_wandb_logger(trainer).experiment
         evaluator = EvaluationHelper(sampling_rate=16000, device=pl_module.device)
+        if pl_module.device.type == "mps":
+            # VGGish (used by audioldm_eval for FAD) doesn't support MPS — keep it on CPU
+            evaluator.frechet.model = evaluator.frechet.model.cpu()
 
         steps_to_calculate_metrics = self.steps_to_calculate_metrics if isinstance(self.steps_to_calculate_metrics, list) else [self.steps_to_calculate_metrics]
 
@@ -1640,6 +1643,9 @@ class ClassCond_GEN_2D_TrackSampleLoggerCTM(ClassCond_GEN_TrackSampleLoggerCTM):
         base_dir = os.path.dirname(trainer.checkpoint_callback.dirpath)
         wandb_logger = get_wandb_logger(trainer).experiment
         evaluator = EvaluationHelper(sampling_rate=16000, device=pl_module.device)
+        if pl_module.device.type == "mps":
+            # VGGish (used by audioldm_eval for FAD) doesn't support MPS — keep it on CPU
+            evaluator.frechet.model = evaluator.frechet.model.cpu()
 
         # Dictionary to accumulate metrics for averaging
         aggregated_metrics = {}
