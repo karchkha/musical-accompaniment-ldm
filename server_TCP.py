@@ -257,9 +257,20 @@ def create_temporal_mask(like, mask_ratio):
 
 def predict(*args):
     global latent_diffusion, tensor, waveforms, stems_to_inpaint, stemidx_to_inpaint, steps, batch, MSAProc, package_size, percentage, config, diffusion_sampler, diffusion_schedule, z, config, latent
-    
-    # batch = MSAProc.fill_batch_from_audio(tensor, batch)
-    timer.record_event("\nStart pred. function")  # First event
+
+    global _first_chunk_time, _chunk_count
+    t_predict_received = time.time()
+    print(f"\n[T+0.000s] /predict received ({_chunk_count} chunks queued so far)")
+    _first_chunk_time = None
+    _chunk_count = 0
+
+    # Wait for all queued data chunks to be processed before predicting
+    t_queue_wait_start = time.time()
+    message_queue.join()
+    t_queue_done = time.time()
+    print(f"[T+{t_queue_done - t_predict_received:.3f}s] Queue drained (waited {t_queue_done - t_queue_wait_start:.3f}s)")
+
+    print(f"[T+{time.time() - t_predict_received:.3f}s] Starting prediction")
 
     with torch.no_grad():
 
@@ -279,7 +290,7 @@ def predict(*args):
   
         mixture_latent = latent_diffusion.CAE.encode(tensor).unsqueeze(1)
         
-        timer.record_event("Calculated Mixrute latent")  # First event
+        print(f"[T+{time.time() - t_predict_received:.3f}s] Mixture latent calculated")
         
         ## Add pr_win_mul * percentage noise patch to the mixture to make future prediction possible
         start_idx = int(mixture_latent.size(-1)  * (1 - pr_win_mul*percentage))
@@ -292,7 +303,7 @@ def predict(*args):
         # Inject noise in the masked area
         inpaint = torch.where(mask, inpaint, noise.to(inpaint.dtype))
         
-        timer.record_event("Entering the Sampler")  # First event
+        print(f"[T+{time.time() - t_predict_received:.3f}s] Entering sampler")
 
         # Inpaint from the model using the noise and the current one-hot features
         samples = latent_diffusion.model.inpaint(
@@ -309,14 +320,14 @@ def predict(*args):
             # channels_list=channels_list,
             # mixture_features_channels_list=mixture_features_channels_list,
         )
-        timer.record_event("Done Sampling")  # First event
+        print(f"[T+{time.time() - t_predict_received:.3f}s] Sampling done")
         
         # update latet vectro for future inpainting
         start_idx = int(samples.size(-1)  * (1 - percentage))
         latent[:, :, :, start_idx:] = samples[:, :, :, start_idx:].clone()
         
         samples_wav = latent_diffusion.CAE.decode(samples.squeeze(1)).unsqueeze(1)
-        timer.record_event("Converted to wav")  # First event
+        print(f"[T+{time.time() - t_predict_received:.3f}s] Converted to wav")
         
         # samples_wav = F.pad(samples_wav, (0, config['audio_samples_logger']['length'] - samples_wav.size(-1)), mode="constant", value=0).cpu().numpy()
         actual_length = samples_wav.size(-1)
@@ -326,7 +337,7 @@ def predict(*args):
         headroom_samples = int(0.02 * config['audio_samples_logger']['sampling_rate'])  # Convert ms to samples
         fade_in_window = np.linspace(0, 1, headroom_samples)
         
-        timer.record_event("Starting sending")  # First event
+        print(f"[T+{time.time() - t_predict_received:.3f}s] Starting send to Max")
 
         # Fill the waveforms for stems in stemidx_to_inpaint
         stem_names = ["bass", "drums", "guitar", "piano"]
@@ -374,7 +385,7 @@ def predict(*args):
 
             client.send_message("/server_predicted", True)
 
-    timer.record_event("Done sending")  # First event
+    print(f"[T+{time.time() - t_predict_received:.3f}s] Done sending")
 
     # Shift tensor data by percentage
     # percentage = config['data']['params']['path']['percentage']
@@ -454,10 +465,19 @@ for _ in range(num_workers):
     worker.start()
 
 # Updated buffer_handler to enqueue messages
+_first_chunk_time = None
+_chunk_count = 0
+
 def buffer_handler(unused_addr, track_id, start_index, *values):
+    global _first_chunk_time, _chunk_count
+    t = time.time()
+    if _first_chunk_time is None:
+        _first_chunk_time = t
+        _chunk_count = 0
+        print(f"[chunk] First chunk received")
+    _chunk_count += 1
     track_id = int(track_id[0])
     start_index = int(start_index)
-    # print(track_id, start_index)
     message_queue.put((track_id, start_index, values))
 
 
