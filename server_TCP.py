@@ -28,7 +28,7 @@ from pythonosc import osc_server
 from pythonosc import osc_bundle_builder
 from pythonosc import osc_message_builder
 
-from threading import Thread
+from threading import Thread, Lock
 
 import sys
 sys.path.append("src")
@@ -262,7 +262,7 @@ def predict(*args):
     t_predict_received = time.time()
     gap_since_first = (t_predict_received - _first_chunk_time) if _first_chunk_time else -1
     gap_since_last  = (t_predict_received - _last_chunk_time)  if _last_chunk_time  else -1
-    print(f"\n[{t_predict_received:.3f}] /predict received — {_chunk_count} chunks, "
+    print(f"\n[{t_predict_received:.3f}] predict triggered — {_chunk_count} chunks, "
           f"first chunk {gap_since_first*1000:.1f}ms ago, last chunk {gap_since_last*1000:.1f}ms ago")
     _first_chunk_time = None
     _last_chunk_time = None
@@ -469,23 +469,37 @@ for _ in range(num_workers):
     worker = Thread(target=process_message_queue, daemon=True)
     worker.start()
 
-# Updated buffer_handler to enqueue messages
+# Auto-trigger state
 _first_chunk_time = None
 _last_chunk_time = None
 _chunk_count = 0
+_auto_lock = Lock()
+_auto_chunks_received = 0
+_auto_chunks_expected = 0
 
-def buffer_handler(unused_addr, track_id, start_index, *values):
+def buffer_handler(unused_addr, track_id, start_index, total_expected_chunks, *values):
     global _first_chunk_time, _last_chunk_time, _chunk_count
+    global _auto_chunks_received, _auto_chunks_expected
     t = time.time()
     if _first_chunk_time is None:
         _first_chunk_time = t
         _chunk_count = 0
-        print(f"[{t:.3f}] First data chunk arrived")
+        print(f"[{t:.3f}] First data chunk arrived (expecting {total_expected_chunks} chunks total)")
     _chunk_count += 1
     _last_chunk_time = t
     track_id = int(track_id[0])
     start_index = int(start_index)
     message_queue.put((track_id, start_index, values))
+
+    with _auto_lock:
+        _auto_chunks_expected = int(total_expected_chunks)
+        _auto_chunks_received += 1
+        should_predict = (_auto_chunks_received >= _auto_chunks_expected)
+        if should_predict:
+            _auto_chunks_received = 0
+
+    if should_predict:
+        Thread(target=predict, daemon=True).start()
 
 
 
