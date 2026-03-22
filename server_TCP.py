@@ -621,7 +621,7 @@ def update_package_size(unused_addr, new_package_size):
     global package_size
 
 
-    if new_package_size < 128 or new_package_size > 16384:
+    if new_package_size < 128 or new_package_size > 26000:
         print(f"Invalid package size received: {new_package_size}. Ignoring.")
         return
 
