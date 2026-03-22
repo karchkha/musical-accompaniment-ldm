@@ -341,7 +341,8 @@ def predict(*args):
 
         # Fill the waveforms for stems in stemidx_to_inpaint
         stem_names = ["bass", "drums", "guitar", "piano"]
-        with client:
+        client.ensure_connected()
+        if True:
             for i in range(4):  # Loop through indices 0 to 3
                 if i in stemidx_to_inpaint:
                     stem_name = stem_names[i]
@@ -634,8 +635,7 @@ def packet_test_handler(unused_addr, packet_size, *values):
 
     bundle.add_content(msg.build())
     bundle = bundle.build()
-    with client:
-        client.send(bundle)
+    client.send(bundle)
 
 def update_package_size(unused_addr, new_package_size):
     global package_size
@@ -711,29 +711,36 @@ class TCPClient:
 
     def connect(self):
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         try:
             self._sock.connect((self.ip, self.port))
-        except ConnectionRefusedError:
-            print(f"Warning: could not connect to {self.ip}:{self.port} (connection refused)")
+            print(f"TCPClient: connected to {self.ip}:{self.port}")
+        except (ConnectionRefusedError, OSError) as e:
+            print(f"Warning: could not connect to {self.ip}:{self.port} ({e})")
             self._sock.close()
             self._sock = None
+
+    def ensure_connected(self):
+        if self._sock is None:
+            self.connect()
 
     def close(self):
         if self._sock:
             self._sock.close()
             self._sock = None
 
-    def __enter__(self):
-        self.connect()
-        return self
-
-    def __exit__(self, *args):
-        self.close()
-
     def _send_raw(self, osc_bytes):
+        self.ensure_connected()
         if self._sock is None:
             return
-        self._sock.sendall(struct.pack('>I', len(osc_bytes)) + osc_bytes)
+        try:
+            self._sock.sendall(struct.pack('>I', len(osc_bytes)) + osc_bytes)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            print("TCPClient: connection lost, reconnecting...")
+            self._sock = None
+            self.connect()
+            if self._sock:
+                self._sock.sendall(struct.pack('>I', len(osc_bytes)) + osc_bytes)
 
     def send(self, bundle_or_message):
         self._send_raw(bundle_or_message.dgram)
@@ -777,6 +784,25 @@ def start_server(ip, port):
         print("Server stopped.")
 
 if __name__ == "__main__":
+    import platform, os as _os
+    _hostname = socket.gethostname()
+    try:
+        _local_ip = socket.gethostbyname(_hostname)
+    except:
+        _local_ip = "unknown"
+    _gpu_info = "none"
+    if torch.cuda.is_available():
+        _gpu_info = ", ".join(torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count()))
+    print("=" * 60)
+    print(f"  multi_track server")
+    print(f"  host    : {_hostname}")
+    print(f"  ip      : {_local_ip}")
+    print(f"  os      : {platform.system()} {platform.release()}")
+    print(f"  python  : {platform.python_version()}")
+    print(f"  gpu     : {_gpu_info}")
+    print(f"  pytorch : {torch.__version__}")
+    print("=" * 60)
+
     seed_everything(1234)
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", default=None, help="Device to use (e.g. cuda, cuda:1, cpu). Defaults to cuda if available.")
@@ -794,8 +820,8 @@ if __name__ == "__main__":
     client = TCPClient(args.client_ip, args.clientport)
     print(f"\nWill be comunicating with client on {args.client_ip}:{args.clientport}")
     
-    with client:
-        client.send_message("/ready", True)
+    client.connect()
+    client.send_message("/ready", True)
 
     # Start the server
     start_server(args.server_ip, args.serverport)
