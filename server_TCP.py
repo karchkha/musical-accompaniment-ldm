@@ -258,10 +258,14 @@ def create_temporal_mask(like, mask_ratio):
 def predict(*args):
     global latent_diffusion, tensor, waveforms, stems_to_inpaint, stemidx_to_inpaint, steps, batch, MSAProc, package_size, percentage, config, diffusion_sampler, diffusion_schedule, z, config, latent
 
-    global _first_chunk_time, _chunk_count
+    global _first_chunk_time, _last_chunk_time, _chunk_count
     t_predict_received = time.time()
-    print(f"\n[T+0.000s] /predict received ({_chunk_count} chunks queued so far)")
+    gap_since_first = (t_predict_received - _first_chunk_time) if _first_chunk_time else -1
+    gap_since_last  = (t_predict_received - _last_chunk_time)  if _last_chunk_time  else -1
+    print(f"\n[{t_predict_received:.3f}] /predict received — {_chunk_count} chunks, "
+          f"first chunk {gap_since_first*1000:.1f}ms ago, last chunk {gap_since_last*1000:.1f}ms ago")
     _first_chunk_time = None
+    _last_chunk_time = None
     _chunk_count = 0
 
     # Wait for all queued data chunks to be processed before predicting
@@ -467,16 +471,18 @@ for _ in range(num_workers):
 
 # Updated buffer_handler to enqueue messages
 _first_chunk_time = None
+_last_chunk_time = None
 _chunk_count = 0
 
 def buffer_handler(unused_addr, track_id, start_index, *values):
-    global _first_chunk_time, _chunk_count
+    global _first_chunk_time, _last_chunk_time, _chunk_count
     t = time.time()
     if _first_chunk_time is None:
         _first_chunk_time = t
         _chunk_count = 0
-        print(f"[chunk] First chunk received")
+        print(f"[{t:.3f}] First data chunk arrived")
     _chunk_count += 1
+    _last_chunk_time = t
     track_id = int(track_id[0])
     start_index = int(start_index)
     message_queue.put((track_id, start_index, values))
@@ -680,6 +686,15 @@ class _TCPHandler(socketserver.BaseRequestHandler):
             data = self._recvall(length)
             if not data:
                 break
+            t = time.time()
+            # peek at OSC address for logging
+            try:
+                addr_end = data.index(b'\x00')
+                addr = data[:addr_end].decode('ascii', errors='ignore')
+            except Exception:
+                addr = '?'
+            if addr in ('/predict', '/load_model', '/ready'):
+                print(f"[{t:.3f}] OSC received: {addr}")
             try:
                 self.server.dispatcher.call_handlers_for_packet(data, self.client_address)
             except Exception as e:
