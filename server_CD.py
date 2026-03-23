@@ -29,7 +29,7 @@ from pythonosc import udp_client
 from pythonosc import osc_bundle_builder
 from pythonosc import osc_message_builder
 
-from threading import Thread
+from threading import Thread, Lock, Timer
 
 import sys
 sys.path.append("src")
@@ -166,6 +166,20 @@ timer = EventTimer()
 
 ##################################################################################################################################################################################
 
+def _make_osc_dgram(address: str, chunk_idx: int, total_chunks: int, floats_chunk: np.ndarray) -> bytes:
+    """Build a raw OSC message datagram: /address [chunk_idx:i] [total_chunks:i] [floats:f...].
+    ~100x faster than OscMessageBuilder: uses numpy byte packing instead of
+    a Python loop with per-element add_arg() calls."""
+    import struct as _struct
+    addr = address.encode() + b'\x00'
+    addr += b'\x00' * ((4 - len(addr) % 4) % 4)
+    n = len(floats_chunk)
+    tag = (',ii' + 'f' * n).encode() + b'\x00'
+    tag += b'\x00' * ((4 - len(tag) % 4) % 4)
+    header = _struct.pack('>ii', chunk_idx, total_chunks)
+    return addr + tag + header + floats_chunk.astype('>f4').tobytes()
+
+
 def dict2namespace(config):
     namespace = argparse.Namespace()
     for key, value in config.items():
@@ -255,7 +269,23 @@ def create_temporal_mask(like, mask_ratio):
 def predict(*args):
     global latent_diffusion, tensor, waveforms, stems_to_inpaint, stemidx_to_inpaint, steps, batch, MSAProc, package_size, percentage, config, diffusion_sampler, diffusion_schedule, z, config, latent, CAE
 
-    timer.record_event("\nStart pred. function")  # First event
+    global _first_chunk_time, _last_chunk_time, _chunk_count
+    t_predict_received = time.time()
+
+    if not _predict_sem.acquire(blocking=False):
+        print(f"[{t_predict_received:.3f}] predict skipped — already running")
+        return
+
+    gap_since_first = (t_predict_received - _first_chunk_time) if _first_chunk_time else -1
+    gap_since_last  = (t_predict_received - _last_chunk_time)  if _last_chunk_time  else -1
+    print(f"\n[{t_predict_received:.3f}] predict triggered — {_chunk_count} chunks, "
+          f"first chunk {gap_since_first*1000:.1f}ms ago, last chunk {gap_since_last*1000:.1f}ms ago")
+
+    message_queue.join()
+    print(f"[T+{time.time() - t_predict_received:.3f}s] Queue drained, starting prediction")
+
+    timer.checkpoints.clear()
+    timer.record_event("Predict start")
 
     with torch.no_grad():
 
@@ -350,29 +380,14 @@ def predict(*args):
                 flatten_prediction[start_idx:start_idx + headroom_samples] *= fade_in_window
                 
                 generated_audio[:,start_idx:end_idx] = torch.tensor(flatten_prediction[start_idx:end_idx])   #### this will be deleted
-                
-                # for i in range(0, 163840, package_size):
+
                 # Send only the percentage part in packages
-                for j in range(start_idx, end_idx, package_size):
-                    bundle = osc_bundle_builder.OscBundleBuilder(osc_bundle_builder.IMMEDIATELY)
-                    msg = osc_message_builder.OscMessageBuilder(address="/"+stem_name)
-
-                    # Determine the actual number of elements in this package
-                    remaining = min(package_size, end_idx - j)  # Ensures last package is correct
-
-                    # Add the correct amount of data
-                    for k in range(remaining):  
-                        prediction_for_sending = flatten_prediction[j + k]
-                        msg.add_arg(prediction_for_sending, arg_type="f")  # Specify 'f' for float32
-
-                    # Add the message to the bundle
-                    bundle.add_content(msg.build())
-                    bundle = bundle.build()
-
-                    # Send the bundle
-                    client.send(bundle)
-
-                    # time.sleep(0.0001)
+                dest = (client._address, client._port)
+                chunk_starts = list(range(start_idx, end_idx, package_size))
+                total_chunks = len(chunk_starts)
+                for chunk_idx, j in enumerate(chunk_starts):
+                    chunk = flatten_prediction[j : j + min(package_size, end_idx - j)]
+                    client._sock.sendto(_make_osc_dgram("/" + stem_name, chunk_idx, total_chunks, chunk), dest)
      
     timer.record_event("Done sending")  # First event
                         
@@ -385,7 +400,8 @@ def predict(*args):
     shift_tensor_data(generated_audio, percentage)
 
     timer.record_event("Done shifting")  # First event
-    
+    _predict_sem.release()
+
 # Create a queue to hold incoming messages
 message_queue = Queue()
 
@@ -455,12 +471,69 @@ for _ in range(num_workers):
     worker = Thread(target=process_message_queue, daemon=True)
     worker.start()
 
-# Updated buffer_handler to enqueue messages
-def buffer_handler(unused_addr, track_id, start_index, *values):
+# Auto-trigger state
+_first_chunk_time = None
+_last_chunk_time = None
+_chunk_count = 0
+_auto_lock = Lock()
+_auto_chunks_received = 0
+_auto_chunks_expected = 0
+_current_batch_id = -1
+_predict_sem = Lock()
+_watchdog_timer = None
+_WATCHDOG_SAFETY_FACTOR = 5
+
+
+def _watchdog_fire(batch_id):
+    global _auto_chunks_received
+    with _auto_lock:
+        if _current_batch_id != batch_id or _auto_chunks_received == 0:
+            return
+        missing = _auto_chunks_expected - _auto_chunks_received
+        print(f"WARNING: batch {batch_id} missing {missing}/{_auto_chunks_expected} chunks — triggering predict anyway")
+        _auto_chunks_received = 0
+    Thread(target=predict, daemon=True).start()
+
+
+def buffer_handler(unused_addr, track_id, batch_id, start_index, total_expected_chunks, *values):
+    global _first_chunk_time, _last_chunk_time, _chunk_count
+    global _auto_chunks_received, _auto_chunks_expected, _current_batch_id, _watchdog_timer
+    t = time.time()
     track_id = int(track_id[0])
     start_index = int(start_index)
-    # print(track_id, start_index)
+    batch_id = int(batch_id)
+    total_expected_chunks = int(total_expected_chunks)
     message_queue.put((track_id, start_index, values))
+
+    with _auto_lock:
+        if batch_id != _current_batch_id:
+            _current_batch_id = batch_id
+            _auto_chunks_received = 0
+            _first_chunk_time = t
+            _chunk_count = 0
+            print(f"[{t:.3f}] New batch {batch_id} (expecting {total_expected_chunks} chunks)")
+        _auto_chunks_expected = total_expected_chunks
+        _auto_chunks_received += 1
+        _chunk_count += 1
+        _last_chunk_time = t
+        should_predict = (_auto_chunks_received >= _auto_chunks_expected)
+        if should_predict:
+            _auto_chunks_received = 0
+            if _watchdog_timer:
+                _watchdog_timer.cancel()
+                _watchdog_timer = None
+        else:
+            if _watchdog_timer:
+                _watchdog_timer.cancel()
+            if _auto_chunks_received > 1:
+                avg_interval = (_last_chunk_time - _first_chunk_time) / (_auto_chunks_received - 1)
+            else:
+                avg_interval = 0.05
+            _watchdog_timer = Timer(avg_interval * _WATCHDOG_SAFETY_FACTOR, _watchdog_fire, args=(batch_id,))
+            _watchdog_timer.start()
+
+    if should_predict:
+        Thread(target=predict, daemon=True).start()
 
 
 
@@ -678,6 +751,7 @@ def start_server(ip, port):
     print(f"\nStarting server on {ip}:{port} | device: {device}")
     server = osc_server.ThreadingOSCUDPServer((ip, port), dispatcher)
     server.max_packet_size = 65536
+    server.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)  # 4MB receive buffer
     print("Server is running!\n")
     try:
         server.serve_forever()
@@ -718,6 +792,8 @@ if __name__ == "__main__":
     ### client
     client_port=str(args.clientport)
     client = udp_client.SimpleUDPClient(args.client_ip, args.clientport)
+    client._sock.setblocking(True)
+    client._sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4 * 1024 * 1024)
     print(f"\nWill be comunicating with client on {args.client_ip}:{args.clientport}")
     
     # client = udp_client.SimpleUDPClient("127.0.0.1", args.clientport)
