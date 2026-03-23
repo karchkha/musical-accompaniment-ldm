@@ -9,6 +9,8 @@ and gives their PID. For each process type, 'kill XXXX' where XXXX is PID.
 
 
 import argparse
+import platform
+import socket
 import warnings
 import numpy as np
 import torch
@@ -681,6 +683,24 @@ def start_server(ip, port):
         print("Server stopped.")
 
 if __name__ == "__main__":
+    _hostname = socket.gethostname()
+    try:
+        _local_ip = socket.gethostbyname(_hostname)
+    except:
+        _local_ip = "unknown"
+    _gpu_info = "none"
+    if torch.cuda.is_available():
+        _gpu_info = ", ".join(torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count()))
+    print("=" * 60)
+    print(f"  multi_track server")
+    print(f"  host    : {_hostname}")
+    print(f"  ip      : {_local_ip}")
+    print(f"  os      : {platform.system()} {platform.release()}")
+    print(f"  python  : {platform.python_version()}")
+    print(f"  gpu     : {_gpu_info}")
+    print(f"  pytorch : {torch.__version__}")
+    print("=" * 60)
+
     seed_everything(1234)
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", default=None, help="Device to use (e.g. cuda, cuda:1, cpu). Defaults to cuda if available.")
