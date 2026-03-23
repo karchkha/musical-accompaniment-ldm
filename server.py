@@ -296,14 +296,27 @@ def predict(*args):
         start_idx = int(samples.size(-1) * (1 - percentage))
         latent[:, :, :, start_idx:] = samples[:, :, :, start_idx:].clone()
 
-        # Decode latent → waveform
-        samples_wav = latent_diffusion.CAE.decode(samples.squeeze(1)).unsqueeze(1)
+        # Decode only the cols needed for the send window + 1 col of headroom.
+        # n_cols scales with percentage so it stays correct if percentage changes via OSC.
+        total_length     = config['audio_samples_logger']['length']
+        headroom_samples = int(0.02 * config['audio_samples_logger']['sampling_rate'])
+        n_needed         = int(total_length * percentage) + headroom_samples
+
+        n_cols           = int(64 * percentage) + 1   # e.g. 0.25 → 17, 0.5 → 33
+        samples_per_col  = total_length / 64           # 4134.375 — architectural constant
+        expected_len     = int(n_cols * samples_per_col)
+
+        samples_wav = latent_diffusion.CAE.decode(
+            samples[:, :, :, -n_cols:].squeeze(1)).unsqueeze(1)
         timer.record_event("Decoded to waveform")
 
-        actual_length     = samples_wav.size(-1)
-        samples_wav       = samples_wav.cpu().numpy()
-        headroom_samples  = int(0.02 * config['audio_samples_logger']['sampling_rate'])
-        fade_in_window    = np.linspace(0, 1, headroom_samples)
+        # Crop right-edge boundary artifact to align output with original audio grid,
+        # then extract exactly the send window from the right
+        samples_wav = samples_wav[:, :, :expected_len]
+        samples_wav = samples_wav[:, :, -n_needed:]
+
+        samples_wav    = samples_wav.cpu().numpy()
+        fade_in_window = np.linspace(0, 1, headroom_samples)
 
         timer.record_event("Starting send")
 
@@ -318,23 +331,18 @@ def predict(*args):
             print(f"  Sending {stem_name}")
             flatten_prediction = samples_wav.flatten().astype(np.float32)
 
-            total_length = config['audio_samples_logger']['length']
-            start_idx    = max(0, int(total_length * (1 - percentage))
-                               - (total_length - actual_length) - headroom_samples)
-            end_idx      = actual_length
-
-            # Apply short fade-in to reduce clicks at the boundary
-            flatten_prediction[start_idx:start_idx + headroom_samples] *= fade_in_window
+            # Fade-in at the start of the send window to reduce boundary clicks
+            flatten_prediction[:headroom_samples] *= fade_in_window
 
             # Keep generated_audio in sync for debug export
-            generated_audio[:, start_idx:end_idx] = torch.tensor(
-                flatten_prediction[start_idx:end_idx])
+            buf_start = total_length - n_needed
+            generated_audio[:, buf_start:buf_start + n_needed] = torch.tensor(flatten_prediction)
 
             # Stream chunks — each packet carries chunk_idx + total_chunks for reassembly
-            chunk_starts = list(range(start_idx, end_idx, package_size))
+            chunk_starts = list(range(0, n_needed, package_size))
             total_chunks = len(chunk_starts)
             for chunk_idx, j in enumerate(chunk_starts):
-                chunk = flatten_prediction[j : j + min(package_size, end_idx - j)]
+                chunk = flatten_prediction[j : j + min(package_size, n_needed - j)]
                 client._sock.sendto(
                     _make_osc_dgram("/" + stem_name, chunk_idx, total_chunks, chunk),
                     dest)
