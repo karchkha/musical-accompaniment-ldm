@@ -16,6 +16,7 @@ Author: Tornike Karchkhadze  tkarchkhadze@ucsd.edu
 import argparse
 import platform
 import socket
+import struct
 import warnings
 import time
 import sys
@@ -650,28 +651,49 @@ def update_pr_win_mul(unused_addr, new_pr_win_mul):
 
 
 # =============================================================================
-# OSC dispatcher registration
+# Raw UDP server — single persistent thread, no per-packet thread spawning
 # =============================================================================
 
-dispatcher = dispatcher.Dispatcher()
+_AUDIO_ADDRESSES = {b'/bass': 0, b'/drums': 1, b'/guitar': 2, b'/piano': 3}
 
-# Incoming audio chunks — track_id is passed as extra arg by dispatcher.map
-dispatcher.map("/bass",   buffer_handler, 0)
-dispatcher.map("/drums",  buffer_handler, 1)
-dispatcher.map("/guitar", buffer_handler, 2)
-dispatcher.map("/piano",  buffer_handler, 3)
+_CONTROL_HANDLERS = {}  # populated in start_server after all handlers are defined
 
-# Control messages
-dispatcher.map("/reset",               reset_tensor)
-dispatcher.map("/print",               print_tensor)
-dispatcher.map("/packet_test",         packet_test_handler)
-dispatcher.map("/update_package_size", update_package_size)
-dispatcher.map("/update_percentage",   update_percentage)
-dispatcher.map("/predict_instruments", handle_predict_instruments)
-dispatcher.map("/pr_win_mul",          update_pr_win_mul)
-dispatcher.map("/load_model",          load_network)
-dispatcher.map("/predict",             predict)
-dispatcher.map("/verbose",             handle_verbose)
+
+def _osc_read_string(data: bytes, offset: int):
+    """Read a null-terminated OSC string and advance offset to next 4-byte boundary."""
+    end = data.index(b'\x00', offset)
+    s = data[offset:end]
+    offset = (end + 4) & ~3
+    return s, offset
+
+
+def _raw_udp_listener(sock):
+    """Main receive loop — parses OSC packets directly without spawning threads."""
+    while True:
+        try:
+            data, _ = sock.recvfrom(65536)
+            addr_bytes, offset = _osc_read_string(data, 0)
+
+            if addr_bytes in _AUDIO_ADDRESSES:
+                # Fast path: skip type tag, unpack 3 ints + floats directly
+                _, offset = _osc_read_string(data, offset)
+                batch_id, start_index, total_chunks = struct.unpack_from('>iii', data, offset)
+                offset += 12
+                n = (len(data) - offset) // 4
+                values = struct.unpack_from(f'>{n}f', data, offset)
+                track_id = _AUDIO_ADDRESSES[addr_bytes]
+                buffer_handler(addr_bytes.decode(), (track_id,), batch_id, start_index, total_chunks, *values)
+            else:
+                # Slow path: use pythonosc to parse args, dispatch to handler
+                from pythonosc.osc_message import OscMessage
+                msg = OscMessage(data)
+                handler = _CONTROL_HANDLERS.get(msg.address)
+                if handler:
+                    Thread(target=handler, args=(msg.address, *msg), daemon=True).start()
+                else:
+                    print(f"[UDP] unknown address: {msg.address}")
+        except Exception as e:
+            print(f"[UDP] error: {e}")
 
 
 # =============================================================================
@@ -679,13 +701,25 @@ dispatcher.map("/verbose",             handle_verbose)
 # =============================================================================
 
 def start_server(ip, port):
+    _CONTROL_HANDLERS.update({
+        "/reset":               reset_tensor,
+        "/print":               print_tensor,
+        "/packet_test":         packet_test_handler,
+        "/update_package_size": update_package_size,
+        "/update_percentage":   update_percentage,
+        "/predict_instruments": handle_predict_instruments,
+        "/pr_win_mul":          update_pr_win_mul,
+        "/load_model":          load_network,
+        "/predict":             predict,
+        "/verbose":             handle_verbose,
+    })
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
+    sock.bind((ip, port))
     print(f"\nStarting server on {ip}:{port}  |  device: {device}")
-    server = osc_server.ThreadingOSCUDPServer((ip, port), dispatcher)
-    server.max_packet_size = 65536
-    server.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
     print("Server is running.\n")
     try:
-        server.serve_forever()
+        _raw_udp_listener(sock)
     except KeyboardInterrupt:
         print("Server stopped.")
 
