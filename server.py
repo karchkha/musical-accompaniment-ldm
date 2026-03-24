@@ -424,6 +424,7 @@ _auto_lock            = Lock()
 _auto_chunks_received = 0
 _auto_chunks_expected = 0
 _current_batch_id     = -1
+_batch_triggered      = False           # True once predict has fired for current batch
 _predict_sem          = Lock()          # prevents concurrent predictions
 _watchdog_timer       = None
 _WATCHDOG_SAFETY_FACTOR = 5             # fire after 5× the observed avg inter-chunk gap
@@ -431,13 +432,14 @@ _WATCHDOG_SAFETY_FACTOR = 5             # fire after 5× the observed avg inter-
 
 def _watchdog_fire(batch_id):
     """Called when chunks stop arriving before the expected count is reached."""
-    global _auto_chunks_received
+    global _auto_chunks_received, _batch_triggered
     with _auto_lock:
-        if _current_batch_id != batch_id or _auto_chunks_received == 0:
-            return  # batch already completed or superseded
+        if _current_batch_id != batch_id or _auto_chunks_received == 0 or _batch_triggered:
+            return  # batch already completed, superseded, or already triggered
         missing = _auto_chunks_expected - _auto_chunks_received
         print(f"WARNING: batch {batch_id} missing {missing}/{_auto_chunks_expected} "
               f"chunks — triggering predict anyway")
+        _batch_triggered      = True
         _auto_chunks_received = 0
     Thread(target=predict, daemon=True).start()
 
@@ -451,7 +453,7 @@ def buffer_handler(unused_addr, track_id, batch_id, start_index,
     chunks stop arriving (e.g. due to UDP packet loss over internet).
     """
     global _first_chunk_time, _last_chunk_time, _chunk_count
-    global _auto_chunks_received, _auto_chunks_expected, _current_batch_id, _watchdog_timer
+    global _auto_chunks_received, _auto_chunks_expected, _current_batch_id, _batch_triggered, _watchdog_timer
 
     t                    = time.time()
     track_id             = int(track_id[0])
@@ -464,12 +466,15 @@ def buffer_handler(unused_addr, track_id, batch_id, start_index,
     with _auto_lock:
         if batch_id != _current_batch_id:
             _current_batch_id     = batch_id
+            _batch_triggered      = False
             _auto_chunks_received = 0
             _first_chunk_time     = t
             _chunk_count          = 0
             if verbose:
                 print(f"[RX]      first chunk  batch={batch_id}  "
                       f"expecting {total_expected_chunks} chunks  {_hms()}")
+        elif _batch_triggered:
+            return  # late chunk for already-triggered batch — discard
 
         _auto_chunks_expected  = total_expected_chunks
         _auto_chunks_received += 1
@@ -478,6 +483,7 @@ def buffer_handler(unused_addr, track_id, batch_id, start_index,
         should_predict         = (_auto_chunks_received >= _auto_chunks_expected)
 
         if should_predict:
+            _batch_triggered      = True
             _auto_chunks_received = 0
             if _watchdog_timer:
                 _watchdog_timer.cancel()
