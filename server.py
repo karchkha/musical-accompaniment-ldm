@@ -73,9 +73,10 @@ CAE                = EncoderDecoder(device=device)  # standalone music2latent co
 # Runtime parameters (can be updated via OSC at any time)
 steps        = 10
 config       = {}
-package_size = 5120   # floats per UDP chunk — tune from Max with /update_package_size
-percentage   = 0.25   # fraction of the window to inpaint
-pr_win_mul   = 1.0    # prediction window multiplier
+package_size      = 5120   # floats per UDP chunk — tune from Max with /update_package_size
+percentage        = 0.25   # fraction of the window to inpaint
+pr_win_mul        = 1.0    # prediction window multiplier
+headroom_ratio    = 0.02   # crossfade overlap as fraction of sampling rate — synced from Max fade parameter
 
 stems_to_inpaint   = []
 stemidx_to_inpaint = []
@@ -318,7 +319,7 @@ def predict(*args):
         # Decode only the cols needed for the send window + 1 col of headroom.
         # n_cols scales with percentage so it stays correct if percentage changes via OSC.
         total_length     = config['audio_samples_logger']['length']
-        headroom_samples = int(0.02 * config['audio_samples_logger']['sampling_rate'])
+        headroom_samples = int(headroom_ratio * config['audio_samples_logger']['sampling_rate'])
         n_needed         = int(total_length * percentage) + headroom_samples
 
         n_cols           = int(64 * percentage) + 1   # e.g. 0.25 → 17, 0.5 → 33
@@ -632,6 +633,16 @@ def handle_verbose(unused_addr, state):
     print(f"Verbose {'on' if verbose else 'off'}")
 
 
+def update_headroom(unused_addr, ratio):
+    """OSC /update_fade — set crossfade overlap as fraction of sampling rate (e.g. 0.02)."""
+    global headroom_ratio
+    if not (0.0 <= ratio <= 1.0):
+        print(f"Invalid fade ratio: {ratio} (must be 0.0–1.0)")
+        return
+    headroom_ratio = float(ratio)
+    print(f"Headroom ratio → {headroom_ratio}")
+
+
 def update_pr_win_mul(unused_addr, new_pr_win_mul):
     """OSC /pr_win_mul — scale the prediction window relative to inpainting window."""
     global pr_win_mul, mask
@@ -699,6 +710,7 @@ def start_server(ip, port):
         "/packet_test":         packet_test_handler,
         "/update_package_size": update_package_size,
         "/update_percentage":   update_percentage,
+        "/update_fade":         update_headroom,
         "/predict_instruments": handle_predict_instruments,
         "/pr_win_mul":          update_pr_win_mul,
         "/load_model":          load_network,
