@@ -36,6 +36,7 @@ import matplotlib.pyplot as plt
 from pythonosc import dispatcher, osc_server, udp_client
 from pythonosc import osc_bundle_builder, osc_message_builder
 from pytorch_lightning import seed_everything
+from music2latent import EncoderDecoder
 
 # ── Project ───────────────────────────────────────────────────────────────────
 sys.path.append("src")
@@ -66,6 +67,7 @@ generated_audio = torch.full((1, 264600), 0.0)
 latent_diffusion   = None
 diffusion_sampler  = None
 diffusion_schedule = None
+CAE                = EncoderDecoder(device=device)  # standalone music2latent codec
 
 # Runtime parameters (can be updated via OSC at any time)
 steps        = 10
@@ -226,7 +228,7 @@ def load_network(unused_addr):
 
     # Pre-compute inpainting mask and initial latent encoding
     mask   = create_temporal_mask(mask, mask_ratio=percentage).to(device)
-    latent = latent_diffusion.CAE.encode(tensor).unsqueeze(1)
+    latent = CAE.encode(tensor).unsqueeze(1)
 
     print("Model ready!\n")
 
@@ -283,7 +285,7 @@ def predict(*args):
             current_features[:, idx] = 1
 
         # Encode mixture and zero out the prediction window
-        mixture_latent = latent_diffusion.CAE.encode(tensor).unsqueeze(1)
+        mixture_latent = CAE.encode(tensor).unsqueeze(1)
         if verbose: timer.record_event("Mixture latent encoded")
 
         start_idx = int(mixture_latent.size(-1) * (1 - pr_win_mul * percentage))
@@ -322,7 +324,7 @@ def predict(*args):
         samples_per_col  = total_length / 64           # 4134.375 — architectural constant
         expected_len     = int(n_cols * samples_per_col)
 
-        samples_wav = latent_diffusion.CAE.decode(
+        samples_wav = CAE.decode(
             samples[:, :, :, -n_cols:].squeeze(1)).unsqueeze(1)
         if verbose: timer.record_event("Decoded to waveform")
 
