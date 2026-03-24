@@ -77,6 +77,8 @@ pr_win_mul   = 1.0    # prediction window multiplier
 stems_to_inpaint   = []
 stemidx_to_inpaint = []
 
+verbose = 0   # 0 = silent, 1 = print timing events (toggled via /verbose from Max)
+
 filename = "configs/for_server/Diff_latent_cond_gen_concat_eval.yaml"
 
 # Batch placeholder passed to model helpers
@@ -102,11 +104,14 @@ class EventTimer:
 
     def record_event(self, event_name="Event"):
         current_time = time.time()
+        ms = int((current_time % 1) * 1000)
+        lt = time.localtime(current_time)
+        clock = f"{lt.tm_hour:02d}:{lt.tm_min:02d}:{lt.tm_sec:02d}.{ms:03d}"
         if self.checkpoints:
             elapsed = current_time - self.checkpoints[-1][1]
-            print(f"  {event_name}: {elapsed:.4f}s")
+            print(f"  {event_name}: +{elapsed*1000:.1f}ms  {clock}")
         else:
-            print(f"  {event_name} (start)")
+            print(f"  {event_name} (start)  {clock}")
         self.checkpoints.append((event_name, current_time))
 
     def get_intervals(self):
@@ -116,6 +121,14 @@ class EventTimer:
 
 
 timer = EventTimer()
+
+
+def _hms() -> str:
+    """Return current wall-clock time as HH:MM:SS.mmm string."""
+    t  = time.time()
+    ms = int((t % 1) * 1000)
+    lt = time.localtime(t)
+    return f"{lt.tm_hour:02d}:{lt.tm_min:02d}:{lt.tm_sec:02d}.{ms:03d}"
 
 
 # =============================================================================
@@ -233,21 +246,24 @@ def predict(*args):
 
     # Guard against concurrent predictions
     if not _predict_sem.acquire(blocking=False):
-        print(f"[{t_predict_received:.3f}] predict skipped — already running")
+        print(f"[PREDICT] skipped — already running  {_hms()}")
         return
 
-    gap_since_first = (t_predict_received - _first_chunk_time) if _first_chunk_time else -1
-    gap_since_last  = (t_predict_received - _last_chunk_time)  if _last_chunk_time  else -1
-    print(f"[{t_predict_received:.3f}] predict triggered — {_chunk_count} chunks, "
-          f"first chunk {gap_since_first*1000:.1f}ms ago, "
-          f"last chunk {gap_since_last*1000:.1f}ms ago")
+    if verbose:
+        gap_since_first = (t_predict_received - _first_chunk_time) if _first_chunk_time else -1
+        gap_since_last  = (t_predict_received - _last_chunk_time)  if _last_chunk_time  else -1
+        print("----------------------------------------")
+        print(f"[PREDICT] triggered  {_chunk_count} chunks  "
+              f"first {gap_since_first*1000:.1f}ms ago  last {gap_since_last*1000:.1f}ms ago  {_hms()}")
 
     # Drain the incoming data queue before touching the tensor
     message_queue.join()
-    print(f"  [+{time.time() - t_predict_received:.3f}s] queue drained, starting prediction")
+    if verbose:
+        print(f"  queue drained  +{(time.time() - t_predict_received)*1000:.1f}ms  {_hms()}")
 
     timer.checkpoints.clear()
-    timer.record_event("Predict start")
+    if verbose:
+        timer.record_event("Predict start")
 
     with torch.no_grad():
 
@@ -268,7 +284,7 @@ def predict(*args):
 
         # Encode mixture and zero out the prediction window
         mixture_latent = latent_diffusion.CAE.encode(tensor).unsqueeze(1)
-        timer.record_event("Mixture latent encoded")
+        if verbose: timer.record_event("Mixture latent encoded")
 
         start_idx = int(mixture_latent.size(-1) * (1 - pr_win_mul * percentage))
         mixture_latent[:, :, :, start_idx:] = 0.0
@@ -276,7 +292,7 @@ def predict(*args):
         # Inject noise into the masked region of the stored latent
         inpaint = latent.clone()
         inpaint = torch.where(mask, inpaint, noise.to(inpaint.dtype))
-        timer.record_event("Entering sampler")
+        if verbose: timer.record_event("Entering sampler")
 
         # Diffusion inpainting
         samples = latent_diffusion.model.inpaint(
@@ -290,7 +306,7 @@ def predict(*args):
             augment_labels=None,
             mixture=mixture_latent,
         )
-        timer.record_event("Sampling done")
+        if verbose: timer.record_event("Sampling done")
 
         # Update stored latent with the freshly inpainted region
         start_idx = int(samples.size(-1) * (1 - percentage))
@@ -308,7 +324,7 @@ def predict(*args):
 
         samples_wav = latent_diffusion.CAE.decode(
             samples[:, :, :, -n_cols:].squeeze(1)).unsqueeze(1)
-        timer.record_event("Decoded to waveform")
+        if verbose: timer.record_event("Decoded to waveform")
 
         # Crop right-edge boundary artifact to align output with original audio grid,
         # then extract exactly the send window from the right
@@ -318,8 +334,6 @@ def predict(*args):
         samples_wav    = samples_wav.cpu().numpy()
         fade_in_window = np.linspace(0, 1, headroom_samples)
 
-        timer.record_event("Starting send")
-
         # Send each predicted stem back to Max as enumerated OSC chunks
         stem_names = ["bass", "drums", "guitar", "piano"]
         dest       = (client._address, client._port)
@@ -328,7 +342,7 @@ def predict(*args):
             if i not in stemidx_to_inpaint:
                 continue
 
-            print(f"  Sending {stem_name}")
+            if verbose: print(f"  [SEND]    {stem_name}  {_hms()}")
             flatten_prediction = samples_wav.flatten().astype(np.float32)
 
             # Fade-in at the start of the send window to reduce boundary clicks
@@ -348,7 +362,7 @@ def predict(*args):
                     dest)
                 time.sleep(0.0001)  # brief pacing for remote server stability
 
-    timer.record_event("Send complete")
+    if verbose: timer.record_event("Send complete")
 
     client.send_message("/server_predicted", True)
 
@@ -357,9 +371,9 @@ def predict(*args):
     shift_tensor_data(tensor,          percentage)
     shift_tensor_data(latent,          percentage)
     shift_tensor_data(generated_audio, percentage)
-    print(f"  Buffers shifted left by {shift_size} samples.")
-
-    timer.record_event("Buffers shifted")
+    if verbose:
+        print(f"  Buffers shifted left by {shift_size} samples.  {_hms()}")
+        timer.record_event("Buffers shifted")
     _predict_sem.release()
 
 
@@ -449,8 +463,9 @@ def buffer_handler(unused_addr, track_id, batch_id, start_index,
             _auto_chunks_received = 0
             _first_chunk_time     = t
             _chunk_count          = 0
-            print(f"[{t:.3f}] New batch {batch_id} "
-                  f"(expecting {total_expected_chunks} chunks)")
+            if verbose:
+                print(f"[RX]      first chunk  batch={batch_id}  "
+                      f"expecting {total_expected_chunks} chunks  {_hms()}")
 
         _auto_chunks_expected  = total_expected_chunks
         _auto_chunks_received += 1
@@ -607,6 +622,13 @@ def update_percentage(unused_addr, new_percentage):
     print(f"Percentage → {percentage}")
 
 
+def handle_verbose(unused_addr, state):
+    """OSC /verbose [0|1] — enable or disable timing log (mirrored from Max verbose message)."""
+    global verbose
+    verbose = int(state)
+    print(f"Verbose {'on' if verbose else 'off'}")
+
+
 def update_pr_win_mul(unused_addr, new_pr_win_mul):
     """OSC /pr_win_mul — scale the prediction window relative to inpainting window."""
     global pr_win_mul, mask
@@ -639,6 +661,7 @@ dispatcher.map("/predict_instruments", handle_predict_instruments)
 dispatcher.map("/pr_win_mul",          update_pr_win_mul)
 dispatcher.map("/load_model",          load_network)
 dispatcher.map("/predict",             predict)
+dispatcher.map("/verbose",             handle_verbose)
 
 
 # =============================================================================

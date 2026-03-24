@@ -24,7 +24,7 @@ def karras_sample(
     shape,
     steps,
     clip_denoised=True,
-    progress=False,
+    progress=True,
     callback=None,
     model_kwargs=None,
     device=None,
@@ -243,14 +243,14 @@ def sample_multistep(
             sigmas.append((t_max_rho + ts[i] / (steps - 1) * (t_min_rho - t_max_rho)) ** rho)
         sigmas = th.tensor(sigmas)
         sigmas = append_zero(sigmas).to(x.device)
-    indices = range(len(sigmas) - 1)
+    indices = list(range(len(sigmas) - 1))
     if progress:
         from tqdm.auto import tqdm
+        loop = tqdm(indices[:-1])
+    else:
+        loop = indices[:-1]
 
-        indices = tqdm(indices)
-
-
-    for i in indices[:-1]:
+    for i in loop:
         sigma = sigmas[i]
         print(i, sigma, sigmas[i+1])
         #print(0.002 * s_in)
@@ -300,14 +300,14 @@ def sample_multistep_cd(
             sigmas.append((t_max_rho + ts[i] / (steps - 1) * (t_min_rho - t_max_rho)) ** rho)
         sigmas = th.tensor(sigmas)
         sigmas = append_zero(sigmas).to(x.device)
-    indices = range(len(sigmas) - 1)
+    indices = list(range(len(sigmas) - 1))
     if progress:
         from tqdm.auto import tqdm
+        loop = tqdm(indices[:-1])
+    else:
+        loop = indices[:-1]
 
-        indices = tqdm(indices)
-
-
-    for i in indices[:-1]:
+    for i in loop:
         sigma = sigmas[i]
         # print(i, sigma, sigmas[i+1])
         #print(0.002 * s_in)
@@ -357,14 +357,14 @@ def sample_exact(
             sigmas.append((t_max_rho + ts[i] / (steps - 1) * (t_min_rho - t_max_rho)) ** rho)
         sigmas = th.tensor(sigmas)
         sigmas = append_zero(sigmas).to(x.device)
-    indices = range(len(sigmas) - 1)
+    indices = list(range(len(sigmas) - 1))
     if progress:
         from tqdm.auto import tqdm
+        loop = tqdm(indices[:-1])
+    else:
+        loop = indices[:-1]
 
-        indices = tqdm(indices)
-
-
-    for i in indices[:-1]:
+    for i in loop:
         sigma = sigmas[i]
         # print(sigma, sigmas[i+1])
         if sigmas[i+1] != 0:
@@ -418,14 +418,15 @@ def sample_gamma_multistep_(
             sigmas.append((t_max_rho + ts[i] / (steps - 1) * (t_min_rho - t_max_rho)) ** rho)
         sigmas = th.tensor(sigmas)
         sigmas = append_zero(sigmas).to(x.device)
-    indices = range(len(sigmas) - 1)
+    indices = list(range(len(sigmas) - 1))
     if progress:
         from tqdm.auto import tqdm
-
-        indices = tqdm(indices)
+        loop = tqdm(indices[:-1])
+    else:
+        loop = indices[:-1]
 
     assert gamma != 0.0 and gamma != 1.0
-    for i in indices[:-1]:
+    for i in loop:
         sigma = sigmas[i]
         print(sigma, sigmas[i+1], gamma)
         s = (np.sqrt(1. - gamma ** 2) * (sigmas[i + 1] - 0.002) + 0.002)
@@ -497,16 +498,17 @@ def sample_gamma_multistep(
             sigmas.append((t_max_rho + ts[i] / (steps - 1) * (t_min_rho - t_max_rho)) ** rho)
         sigmas = th.tensor(sigmas)
         sigmas = append_zero(sigmas).to(x.device)
-    indices = range(len(sigmas) - 1)
+    indices = list(range(len(sigmas) - 1))
     if progress:
         from tqdm.auto import tqdm
-
-        indices = tqdm(indices)
+        loop = tqdm(indices[:-1])
+    else:
+        loop = indices[:-1]
 
     vpsde_ = vpsde(cos_t_classifier=(64==x.shape[-2]))
 
     assert gamma != 0.0 and gamma != 1.0
-    for i in indices[:-1]:
+    for i in loop:
         sigma = sigmas[i]
         if edm_style:
             #s = gamma * (sigmas[i] - sigmas[i+1]) + sigmas[i+1]
