@@ -78,10 +78,12 @@ percentage        = 0.25   # fraction of the window to inpaint
 pr_win_mul        = 1.0    # prediction window multiplier
 headroom_ratio    = 0.02   # crossfade overlap as fraction of sampling rate — synced from Max fade parameter
 
+stem_names         = ["bass", "drums", "guitar", "piano"]
 stems_to_inpaint   = []
 stemidx_to_inpaint = []
 
-verbose = 0   # 0 = silent, 1 = print timing events (toggled via /verbose from Max)
+verbose     = 0     # 0 = silent, 1 = print timing events (toggled via /verbose from Max)
+_loading    = False # True while load_network is running; all other handlers ignore messages
 
 filename = "configs/for_server/Diff_latent_cond_gen_concat_eval.yaml"
 
@@ -92,8 +94,8 @@ batch = [
     torch.zeros((1, 4, 264600)),
 ]
 
-# Per-stem output waveform cache (populated during predict)
-waveforms = {"bass": None, "drums": None, "guitar": None, "piano": None}
+# Per-stem output waveform cache — keys populated from config stems after load_network
+waveforms = {s: None for s in stem_names}
 
 
 # =============================================================================
@@ -201,6 +203,8 @@ def load_network(unused_addr):
     global latent_diffusion, stemidx_to_inpaint, steps, tensor, MSAProc
     global latent, mask, config, package_size, filename
     global percentage, diffusion_sampler, diffusion_schedule, pr_win_mul
+    global _loading
+    _loading = True
 
     config = yaml.load(open(filename, 'r'), Loader=yaml.FullLoader)
     cfg    = dict2namespace(config)
@@ -232,6 +236,7 @@ def load_network(unused_addr):
     mask   = create_temporal_mask(mask, mask_ratio=percentage).to(device)
     latent = CAE.encode(tensor).unsqueeze(1)
 
+    _loading = False
     print("Model ready!\n")
 
 
@@ -339,8 +344,7 @@ def predict(*args):
         fade_in_window = np.linspace(0, 1, headroom_samples)
 
         # Send each predicted stem back to Max as enumerated OSC chunks
-        stem_names = ["bass", "drums", "guitar", "piano"]
-        dest       = (client._address, client._port)
+        dest = (client._address, client._port)
 
         for i, stem_name in enumerate(stem_names):
             if i not in stemidx_to_inpaint:
@@ -532,15 +536,13 @@ def shift_tensor_data(tensor: torch.Tensor, percentage: float):
 # =============================================================================
 
 def handle_predict_instruments(address, *args):
-    """OSC /predict_instruments [bass drum guitar piano] — 1 = generate, 0 = preserve."""
-    global stemidx_to_inpaint
-    if len(args) != 4:
-        print(f"Invalid /predict_instruments message: {args}")
-        return
-    instrument_names   = ["bass", "drums", "guitar", "piano"]
-    stems_to_inpaint   = [instrument_names[i] for i in range(4) if args[i] == 1]
-    stemidx_to_inpaint = [i for i, s in enumerate(instrument_names)
-                           if s in stems_to_inpaint]
+    """OSC /predict_instruments — one-hot vector, length = number of stems in config."""
+    global stemidx_to_inpaint, stems_to_inpaint
+
+    if len(args) != len(stem_names):
+        print(f"predict_instruments: got {len(args)} flags but config has {len(stem_names)} stems")
+    stems_to_inpaint   = [stem_names[i] for i in range(min(len(args), len(stem_names))) if args[i] == 1]
+    stemidx_to_inpaint = [i for i, s in enumerate(stem_names) if s in stems_to_inpaint]
     print(f"Stems to generate: {stems_to_inpaint}")
 
 
@@ -663,7 +665,7 @@ def update_pr_win_mul(unused_addr, new_pr_win_mul):
 # Raw UDP server — single persistent thread, no per-packet thread spawning
 # =============================================================================
 
-_AUDIO_ADDRESSES = {b'/bass': 0, b'/drums': 1, b'/guitar': 2, b'/piano': 3}
+_AUDIO_ADDRESSES = {b'/context': 0}
 
 _CONTROL_HANDLERS = {}  # populated in start_server after all handlers are defined
 
@@ -682,6 +684,9 @@ def _raw_udp_listener(sock):
         try:
             data, _ = sock.recvfrom(65536)
             addr_bytes, offset = _osc_read_string(data, 0)
+
+            if _loading:
+                continue
 
             if addr_bytes in _AUDIO_ADDRESSES:
                 # Fast path: skip type tag, unpack 3 ints + floats directly
