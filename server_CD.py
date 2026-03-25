@@ -143,9 +143,9 @@ def _hms() -> str:
 # Fast OSC datagram builder
 # =============================================================================
 
-def _make_osc_dgram(address: str, chunk_idx: int, total_chunks: int,
+def _make_osc_dgram(address: str, batch_id: int, chunk_idx: int, total_chunks: int,
                     floats_chunk: np.ndarray) -> bytes:
-    """Build a raw OSC datagram: /address [chunk_idx:i] [total_chunks:i] [floats:f...].
+    """Build a raw OSC datagram: /address [batch_id:i] [chunk_idx:i] [total_chunks:i] [floats:f...].
 
     ~100x faster than OscMessageBuilder: uses numpy byte packing instead of
     a Python loop with per-element add_arg() calls.
@@ -154,9 +154,9 @@ def _make_osc_dgram(address: str, chunk_idx: int, total_chunks: int,
     addr = address.encode() + b'\x00'
     addr += b'\x00' * ((4 - len(addr) % 4) % 4)
     n    = len(floats_chunk)
-    tag  = (',ii' + 'f' * n).encode() + b'\x00'
+    tag  = (',iii' + 'f' * n).encode() + b'\x00'
     tag += b'\x00' * ((4 - len(tag) % 4) % 4)
-    header = _struct.pack('>ii', chunk_idx, total_chunks)
+    header = _struct.pack('>iii', batch_id, chunk_idx, total_chunks)
     return addr + tag + header + floats_chunk.astype('>f4').tobytes()
 
 
@@ -255,95 +255,112 @@ def predict(*args):
 
     t_predict_received = time.time()
 
+    # Snapshot batch_id now — _current_batch_id may be overwritten by a new incoming
+    # batch while inference is running, causing response chunks to be tagged with the
+    # wrong id and written into the wrong buffer window.
+    response_batch_id = _current_batch_id
+
     # Guard against concurrent predictions
     if not _predict_sem.acquire(blocking=False):
-        print(f"[PREDICT] skipped — already running  {_hms()}")
+        print(f"[PREDICT] skipped — already running  batch={response_batch_id}  {_hms()}")
+        client.send_message("/batch_dropped", int(response_batch_id))
         return
 
-    if verbose:
-        gap_since_first = (t_predict_received - _first_chunk_time) if _first_chunk_time else -1
-        gap_since_last  = (t_predict_received - _last_chunk_time)  if _last_chunk_time  else -1
-        print("----------------------------------------")
-        print(f"[PREDICT] triggered  {_chunk_count} chunks  "
-              f"first {gap_since_first*1000:.1f}ms ago  last {gap_since_last*1000:.1f}ms ago  {_hms()}")
+    _sem_released = False
+    try:
+        if verbose:
+            gap_since_first = (t_predict_received - _first_chunk_time) if _first_chunk_time else -1
+            gap_since_last  = (t_predict_received - _last_chunk_time)  if _last_chunk_time  else -1
+            print("----------------------------------------")
+            print(f"[PREDICT] batch={response_batch_id}  triggered  {_chunk_count} chunks  "
+                  f"first {gap_since_first*1000:.1f}ms ago  last {gap_since_last*1000:.1f}ms ago  {_hms()}")
 
-    # Drain the incoming data queue before touching the tensor
-    message_queue.join()
-    if verbose:
-        print(f"  queue drained  +{(time.time() - t_predict_received)*1000:.1f}ms  {_hms()}")
+        # Drain the incoming data queue before touching the tensor
+        message_queue.join()
+        if verbose:
+            print(f"  queue drained  +{(time.time() - t_predict_received)*1000:.1f}ms  {_hms()}")
 
-    timer.checkpoints.clear()
-    if verbose:
-        timer.record_event("Predict start")
+        timer.checkpoints.clear()
+        if verbose:
+            timer.record_event("Predict start")
 
-    with torch.no_grad():
+        with torch.no_grad():
+            # One-hot feature vector: 1 = preserved stem, 0 = generated stem
+            current_features = torch.zeros(
+                1, len(config['audio_samples_logger']['stems']), device=device)
+            for idx in stemidx_to_inpaint:
+                current_features[:, idx] = 1
 
-        # One-hot feature vector: 1 = preserved stem, 0 = generated stem
-        current_features = torch.zeros(
-            1, len(config['audio_samples_logger']['stems']), device=device)
-        for idx in stemidx_to_inpaint:
-            current_features[:, idx] = 1
+            # Encode mixture and zero out the prediction window
+            mixture_latent = CAE.encode(tensor).unsqueeze(1)
+            if verbose: timer.record_event("Mixture latent encoded")
 
-        # Encode mixture and zero out the prediction window
-        mixture_latent = CAE.encode(tensor).unsqueeze(1)
-        if verbose: timer.record_event("Mixture latent encoded")
+            start_idx = int(mixture_latent.size(-1) * (1 - pr_win_mul * percentage))
+            mixture_latent[:, :, :, start_idx:] = 0.0
 
-        start_idx = int(mixture_latent.size(-1) * (1 - pr_win_mul * percentage))
-        mixture_latent[:, :, :, start_idx:] = 0.0
+            # Pass source latent and mask into the sampler via model_kwargs
+            source = latent.clone()
+            model_kwargs = {
+                "class_labels":    current_features,
+                "augment_labels":  None,
+                "mixture":         mixture_latent,
+                "source":          source,
+                "mask":            mask,
+            }
 
-        # Pass source latent and mask into the sampler via model_kwargs
-        source = latent.clone()
-        model_kwargs = {
-            "class_labels":    current_features,
-            "augment_labels":  None,
-            "mixture":         mixture_latent,
-            "source":          source,
-            "mask":            mask,
-        }
+            sampler = config['audio_samples_logger']['sampler_to_calculate_metrics']
+            if verbose: timer.record_event("Entering sampler")
 
-        sampler = config['audio_samples_logger']['sampler_to_calculate_metrics']
-        if verbose: timer.record_event("Entering sampler")
+            samples = karras_sample(
+                diffusion=diffusion_sampler,
+                model=latent_diffusion,
+                shape=(1,
+                       config['audio_samples_logger']['channels'],
+                       config['model']['img_resolution'],
+                       config['model']['img_resolution']),
+                steps=steps,
+                model_kwargs=model_kwargs,
+                device=device,
+                clip_denoised=False,
+                sampler=sampler,
+                generator=None,
+                teacher=False,
+                ctm=False,
+                x_T=None,
+                clip_output=False,
+                sigma_min=config['diffusion']['sigma_min'],
+                sigma_max=config['diffusion']['sigma_max'],
+                train=False,
+            )
+            if verbose: timer.record_event("Sampling done")
 
-        samples = karras_sample(
-            diffusion=diffusion_sampler,
-            model=latent_diffusion,
-            shape=(1,
-                   config['audio_samples_logger']['channels'],
-                   config['model']['img_resolution'],
-                   config['model']['img_resolution']),
-            steps=steps,
-            model_kwargs=model_kwargs,
-            device=device,
-            clip_denoised=False,
-            sampler=sampler,
-            generator=None,
-            teacher=False,
-            ctm=False,
-            x_T=None,
-            clip_output=False,
-            sigma_min=config['diffusion']['sigma_min'],
-            sigma_max=config['diffusion']['sigma_max'],
-            train=False,
-        )
-        if verbose: timer.record_event("Sampling done")
+            # Update stored latent with the freshly inpainted region
+            start_idx = int(samples.size(-1) * (1 - percentage))
+            latent[:, :, :, start_idx:] = samples[:, :, :, start_idx:].clone()
 
-        # Update stored latent with the freshly inpainted region
-        start_idx = int(samples.size(-1) * (1 - percentage))
-        latent[:, :, :, start_idx:] = samples[:, :, :, start_idx:].clone()
+        # Shift tensor and latent so the next batch's incoming data lands at correct positions,
+        # then release the semaphore — decode and send don't touch shared state.
+        shift_size = int(tensor.size(-1) * percentage)
+        shift_tensor_data(tensor, percentage)
+        shift_tensor_data(latent, percentage)
+        if verbose:
+            print(f"  Buffers shifted left by {shift_size} samples.  {_hms()}")
+            timer.record_event("Buffers shifted")
+        _predict_sem.release()
+        _sem_released = True
 
-        # Decode only the cols needed for the send window + 1 col of headroom.
-        # n_cols scales with percentage so it stays correct if percentage changes via OSC.
+        # Decode — uses only `samples` (local tensor), tensor/latent no longer needed
         total_length     = config['audio_samples_logger']['length']
         headroom_samples = int(headroom_ratio * config['audio_samples_logger']['sampling_rate'])
         n_needed         = int(total_length * percentage) + headroom_samples
-
         n_cols           = int(64 * percentage) + 1   # e.g. 0.25 → 17, 0.5 → 33
         samples_per_col  = total_length / 64           # 4134.375 — architectural constant
         expected_len     = int(n_cols * samples_per_col)
 
-        samples_wav = CAE.decode(
-            samples[:, :, :, -n_cols:].squeeze(1)).unsqueeze(1)
-        if verbose: timer.record_event("Decoded to waveform")
+        with torch.no_grad():
+            samples_wav = CAE.decode(
+                samples[:, :, :, -n_cols:].squeeze(1)).unsqueeze(1)
+            if verbose: timer.record_event("Decoded to waveform")
 
         # Crop right-edge boundary artifact to align output with original audio grid,
         # then extract exactly the send window from the right
@@ -360,7 +377,7 @@ def predict(*args):
             if i not in stemidx_to_inpaint:
                 continue
 
-            if verbose: print(f"  [SEND]    {stem_name}  {_hms()}")
+            if verbose: print(f"  [SEND]    {stem_name}  batch={response_batch_id}  {_hms()}")
             flatten_prediction = samples_wav.flatten().astype(np.float32)
 
             # Fade-in at the start of the send window to reduce boundary clicks
@@ -376,22 +393,20 @@ def predict(*args):
             for chunk_idx, j in enumerate(chunk_starts):
                 chunk = flatten_prediction[j : j + min(package_size, n_needed - j)]
                 client._sock.sendto(
-                    _make_osc_dgram("/" + stem_name, chunk_idx, total_chunks, chunk),
+                    _make_osc_dgram("/" + stem_name, response_batch_id, chunk_idx, total_chunks, chunk),
                     dest)
 
-    if verbose: timer.record_event("Send complete")
+        if verbose: timer.record_event("Send complete")
 
-    client.send_message("/server_predicted", True)
+        client.send_message("/server_predicted", True)
 
-    # Slide all buffers forward by one prediction window
-    shift_size = int(tensor.size(-1) * percentage)
-    shift_tensor_data(tensor,          percentage)
-    shift_tensor_data(latent,          percentage)
-    shift_tensor_data(generated_audio, percentage)
-    if verbose:
-        print(f"  Buffers shifted left by {shift_size} samples.  {_hms()}")
-        timer.record_event("Buffers shifted")
-    _predict_sem.release()
+        shift_tensor_data(generated_audio, percentage)
+
+    except Exception as e:
+        print(f"[PREDICT] ERROR: {e}")
+    finally:
+        if not _sem_released:
+            _predict_sem.release()
 
 
 # =============================================================================
