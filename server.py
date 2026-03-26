@@ -14,6 +14,7 @@ Author: Tornike Karchkhadze  tkarchkhadze@ucsd.edu
 
 # ── Standard library ──────────────────────────────────────────────────────────
 import argparse
+import os
 import platform
 import socket
 import struct
@@ -23,6 +24,10 @@ import sys
 import importlib
 from threading import Thread, Lock, Timer
 from queue import Queue
+
+# Must be set before importing torch so MPS fallback is active from the start
+if platform.system() == "Darwin":
+    os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
 # ── Third-party ───────────────────────────────────────────────────────────────
 import numpy as np
@@ -48,7 +53,12 @@ warnings.filterwarnings("ignore", category=FutureWarning, message=".*weights_onl
 warnings.filterwarnings("ignore", category=UserWarning,  message=".*flash attention.*")
 
 # ── Device ────────────────────────────────────────────────────────────────────
-device = "cuda" if torch.cuda.is_available() else "cpu"
+if torch.cuda.is_available():
+    device = "cuda"
+elif platform.system() == "Darwin" and torch.backends.mps.is_available():
+    device = "mps"
+else:
+    device = "cpu"
 
 
 # =============================================================================
