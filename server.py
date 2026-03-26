@@ -699,10 +699,9 @@ def _raw_udp_listener(sock):
             data, _ = sock.recvfrom(65536)
             addr_bytes, offset = _osc_read_string(data, 0)
 
-            if _loading:
-                continue
-
             if addr_bytes in _AUDIO_ADDRESSES:
+                if _loading:
+                    continue
                 # Fast path: skip type tag, unpack 3 ints + floats directly
                 _, offset = _osc_read_string(data, offset)
                 batch_id, start_index, total_chunks = struct.unpack_from('>iii', data, offset)
