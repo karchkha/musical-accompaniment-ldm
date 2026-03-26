@@ -668,8 +668,8 @@ def update_headroom(unused_addr, ratio):
 def update_pr_win_mul(unused_addr, new_pr_win_mul):
     """OSC /pr_win_mul — scale the prediction window relative to inpainting window."""
     global pr_win_mul, mask
-    if not (0.0 <= new_pr_win_mul <= 2.0):
-        print(f"Invalid pr_win_mul: {new_pr_win_mul} (must be 0–2)")
+    if new_pr_win_mul not in (-1.0, 0.0, 1.0):
+        print(f"Invalid pr_win_mul: {new_pr_win_mul} (must be -1, 0, or 1)")
         return
     pr_win_mul = float(new_pr_win_mul)
     print(f"pr_win_mul → {pr_win_mul}")
