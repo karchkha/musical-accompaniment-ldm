@@ -205,7 +205,7 @@ def create_temporal_mask(like, mask_ratio):
 
 def load_network(unused_addr):
     """OSC handler for /load_model — loads CTM/CD checkpoint and prepares for inference."""
-    global latent_diffusion, diffusion_sampler, stemidx_to_inpaint, steps
+    global latent_diffusion, diffusion_sampler, stemidx_to_inpaint, steps, generated_audio
     global context_audio, generated_latent, mask, config, package_size, filename
     global r, w, CAE
     global _loading
@@ -238,7 +238,7 @@ def load_network(unused_addr):
     steps = cfg.audio_samples_logger.steps_to_calculate_metrics
 
     # Pre-compute inpainting mask and initial latent encoding
-    mask             = create_temporal_mask(generated_latent, mask_ratio=r).to(device)
+    mask   = create_temporal_mask(mask, mask_ratio=r).to(device)
     generated_latent = CAE.encode(generated_audio).unsqueeze(1)
 
     _loading = False
@@ -298,7 +298,7 @@ def predict(*args):
             context_latent = CAE.encode(context_audio).unsqueeze(1)
             if verbose: timer.record_event("Mixture latent encoded")
 
-            start_idx = min(int(context_latent.size(-1) * (1 + w * r)), context_latent.size(-1))
+            start_idx = int(context_latent.size(-1) * (1 - (w + 1) * r))
             context_latent[:, :, :, start_idx:] = 0.0
 
             # Pass source latent and mask into the sampler via model_kwargs
@@ -425,9 +425,9 @@ def process_message_queue():
     while True:
         track_id, start_index, values = message_queue.get()
 
-        depth       = context_audio.size(-1)
+        depth    = context_audio.size(-1)
         # Target write window: [100 - (w+1)*pct, 100 - pct] of the buffer
-        start_idx   = int(depth * (1 - (w + 1) * r))
+        start_idx  = int(depth * (1 - (w + 2) * r))
         range_start = start_idx + start_index
         range_end   = range_start + len(values)
 

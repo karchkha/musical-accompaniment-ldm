@@ -229,6 +229,7 @@ def load_network(unused_addr):
         print("No checkpoint path — running with random initialization.")
 
     latent_diffusion.to(device)
+    latent_diffusion.eval()
 
     # Instantiate sampler and schedule
     diffusion_sampler  = instantiate_from_config(cfg.diffusion_sampler)
