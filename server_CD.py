@@ -59,10 +59,13 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 # =============================================================================
 
 # Input mixture buffer (1 track × 6 seconds @ 44100 Hz)
-tensor        = torch.full((1, 264600), 0.0)
+context_audio = torch.full((1, 264600), 0.0)
 
 # Latent representation and inpainting mask (updated each predict cycle)
-latent = mask = torch.full((1, 1, 64, 64), 0.0)
+generated_latent = mask = torch.full((1, 1, 64, 64), 0.0)
+
+# Context latent — CAE encoding of context_audio, recomputed each predict cycle
+context_latent = torch.full((1, 1, 64, 64), 0.0)
 
 # Last generated audio — kept for shift_tensor_data and debug export
 generated_audio = torch.full((1, 264600), 0.0)
@@ -203,7 +206,7 @@ def create_temporal_mask(like, mask_ratio):
 def load_network(unused_addr):
     """OSC handler for /load_model — loads CTM/CD checkpoint and prepares for inference."""
     global latent_diffusion, diffusion_sampler, stemidx_to_inpaint, steps
-    global tensor, latent, mask, config, package_size, filename
+    global context_audio, generated_latent, mask, config, package_size, filename
     global r, w, CAE
     global _loading
     _loading = True
@@ -235,8 +238,8 @@ def load_network(unused_addr):
     steps = cfg.audio_samples_logger.steps_to_calculate_metrics
 
     # Pre-compute inpainting mask and initial latent encoding
-    mask   = create_temporal_mask(mask, mask_ratio=r).to(device)
-    latent = CAE.encode(tensor).unsqueeze(1)
+    mask             = create_temporal_mask(generated_latent, mask_ratio=r).to(device)
+    generated_latent = CAE.encode(generated_audio).unsqueeze(1)
 
     _loading = False
     print("Model ready!\n")
@@ -248,9 +251,9 @@ def load_network(unused_addr):
 
 def predict(*args):
     """Run one CD inpainting prediction cycle and stream results back to Max via OSC."""
-    global latent_diffusion, diffusion_sampler, tensor, waveforms
+    global latent_diffusion, diffusion_sampler, context_audio, waveforms
     global stems_to_inpaint, stemidx_to_inpaint, steps, batch
-    global package_size, r, config, latent, CAE
+    global package_size, r, config, generated_latent, context_latent, CAE
     global _first_chunk_time, _last_chunk_time, _chunk_count
 
     t_predict_received = time.time()
@@ -292,18 +295,18 @@ def predict(*args):
                 current_features[:, idx] = 1
 
             # Encode mixture and zero out the prediction window
-            mixture_latent = CAE.encode(tensor).unsqueeze(1)
+            context_latent = CAE.encode(context_audio).unsqueeze(1)
             if verbose: timer.record_event("Mixture latent encoded")
 
-            start_idx = int(mixture_latent.size(-1) * (1 - w * r))
-            mixture_latent[:, :, :, start_idx:] = 0.0
+            start_idx = min(int(context_latent.size(-1) * (1 + w * r)), context_latent.size(-1))
+            context_latent[:, :, :, start_idx:] = 0.0
 
             # Pass source latent and mask into the sampler via model_kwargs
-            source = latent.clone()
+            source = generated_latent.clone()
             model_kwargs = {
                 "class_labels":    current_features,
                 "augment_labels":  None,
-                "mixture":         mixture_latent,
+                "mixture":         context_latent,
                 "source":          source,
                 "mask":            mask,
             }
@@ -334,22 +337,22 @@ def predict(*args):
             )
             if verbose: timer.record_event("Sampling done")
 
-            # Update stored latent with the freshly inpainted region
+            # Update generated latent with the freshly inpainted region
             start_idx = int(samples.size(-1) * (1 - r))
-            latent[:, :, :, start_idx:] = samples[:, :, :, start_idx:].clone()
+            generated_latent[:, :, :, start_idx:] = samples[:, :, :, start_idx:].clone()
 
-        # Shift tensor and latent so the next batch's incoming data lands at correct positions,
+        # Shift context_audio and generated_latent so the next batch's incoming data lands at correct positions,
         # then release the semaphore — decode and send don't touch shared state.
-        shift_size = int(tensor.size(-1) * r)
-        shift_tensor_data(tensor, r)
-        shift_tensor_data(latent, r)
+        shift_size = int(context_audio.size(-1) * r)
+        shift_tensor_data(context_audio, r)
+        shift_tensor_data(generated_latent, r)
         if verbose:
             print(f"  Buffers shifted left by {shift_size} samples.  {_hms()}")
             timer.record_event("Buffers shifted")
         _predict_sem.release()
         _sem_released = True
 
-        # Decode — uses only `samples` (local tensor), tensor/latent no longer needed
+        # Decode — uses only `samples` (local tensor), context_audio/generated_latent no longer needed
         total_length     = config['audio_samples_logger']['length']
         headroom_samples = int(headroom_ratio * config['audio_samples_logger']['sampling_rate'])
         n_needed         = int(total_length * r) + headroom_samples
@@ -417,19 +420,19 @@ message_queue = Queue()
 
 
 def process_message_queue():
-    """Worker thread: dequeues incoming audio chunks and writes them into `tensor`."""
-    global tensor, config, r, w
+    """Worker thread: dequeues incoming audio chunks and writes them into `context_audio`."""
+    global context_audio, config, r, w
     while True:
         track_id, start_index, values = message_queue.get()
 
-        depth       = tensor.size(-1)
+        depth       = context_audio.size(-1)
         # Target write window: [100 - (w+1)*pct, 100 - pct] of the buffer
         start_idx   = int(depth * (1 - (w + 1) * r))
         range_start = start_idx + start_index
         range_end   = range_start + len(values)
 
         track_id = 0  # single-track mode — mixture is always track 0
-        tensor[track_id, range_start:range_end] = torch.tensor(values)
+        context_audio[track_id, range_start:range_end] = torch.tensor(values)
 
         message_queue.task_done()
 
@@ -569,34 +572,36 @@ def handle_predict_instruments(address, *args):
 
 
 def reset_tensor(unused_addr, *args):
-    """OSC /reset — zero out the mixture buffer."""
-    global tensor
-    tensor.fill_(0.0)
-    print("Tensor reset to 0.0")
-    print_tensor(True)
+    """OSC /reset — zero out mixture buffer, stored latent, and generated audio (full restart)."""
+    global context_audio, context_latent, generated_latent, generated_audio
+    context_audio.fill_(0.0)
+    context_latent.fill_(0.0)
+    generated_audio.fill_(0.0)
+    generated_latent = CAE.encode(generated_audio).unsqueeze(1)
+    print("Reset: context_audio, context_latent, generated_latent, and generated_audio zeroed.")
 
 
 def print_tensor(unused_addr, *args):
     """OSC /print — save audio and debug plots to disk."""
-    global tensor, latent
+    global context_audio, generated_latent, context_latent
 
-    torchaudio.save("audio.wav",           tensor,          44100)
-    torchaudio.save("audio_generated.wav", generated_audio, 44100)
-    print(f"Saved audio.wav ({tensor.shape}) and audio_generated.wav ({generated_audio.shape})")
+    torchaudio.save("context_audio.wav",   context_audio,   44100)
+    torchaudio.save("generated_audio.wav", generated_audio, 44100)
+    print(f"context_audio.wav ({context_audio.shape}) and generated_audio.wav ({generated_audio.shape})")
 
     track_names = ["Bass", "Drums", "Guitar", "Piano"]
 
-    # Input mixture plot
+    # Context audio plot
     plt.figure(figsize=(12, 10))
-    for track_id in range(tensor.size(0)):
-        plt.subplot(tensor.size(0), 1, track_id + 1)
-        plt.plot(tensor[track_id].cpu().numpy(), label=track_names[track_id])
+    for track_id in range(context_audio.size(0)):
+        plt.subplot(context_audio.size(0), 1, track_id + 1)
+        plt.plot(context_audio[track_id].cpu().numpy(), label=track_names[track_id])
         plt.title(f"{track_names[track_id]} Audio Data")
         plt.xlabel("Sample Index")
         plt.ylabel("Amplitude")
         plt.grid(); plt.legend()
     plt.tight_layout()
-    plt.savefig("tensor_plot_subplots.png")
+    plt.savefig("context_audio.png")
     plt.close()
 
     # Generated audio plot
@@ -609,15 +614,23 @@ def print_tensor(unused_addr, *args):
         plt.ylabel("Amplitude")
         plt.grid(); plt.legend()
     plt.tight_layout()
-    plt.savefig("tensor_plot_subplots_generated.png")
+    plt.savefig("generated_audio.png")
     plt.close()
 
-    # Latent heatmap
+    # Context latent heatmap
     plt.figure(figsize=(10, 10))
-    plt.imshow(latent[0, 0].cpu().numpy())
-    plt.title("Latent")
+    plt.imshow(context_latent[0, 0].cpu().numpy())
+    plt.title("Context Latent")
     plt.tight_layout()
-    plt.savefig("latent.png")
+    plt.savefig("context_latent.png")
+    plt.close()
+
+    # Generated latent heatmap
+    plt.figure(figsize=(10, 10))
+    plt.imshow(generated_latent[0, 0].cpu().numpy())
+    plt.title("Generated Latent")
+    plt.tight_layout()
+    plt.savefig("generated_latent.png")
     plt.close()
 
     print("Plots saved to disk.")
@@ -648,12 +661,13 @@ def update_package_size(unused_addr, new_package_size):
 
 def update_r(unused_addr, new_r):
     """OSC /update_r — set the inpainting window as a fraction of buffer length."""
-    global r
+    global r, mask
     if not (0.0 <= new_r <= 1.0):
         print(f"Invalid r: {new_r}")
         return
     r = float(new_r)
-    print(f"r → {r}")
+    mask = create_temporal_mask(generated_latent, mask_ratio=r).to(device)
+    print(f"r → {r}  (mask updated)")
 
 
 def handle_verbose(unused_addr, state):
