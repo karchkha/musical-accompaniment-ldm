@@ -74,8 +74,8 @@ CAE                = EncoderDecoder(device=device)  # standalone music2latent co
 steps        = 10
 config       = {}
 package_size      = 5120   # floats per UDP chunk — tune from Max with /update_package_size
-percentage        = 0.25   # fraction of the window to inpaint
-pr_win_mul        = 1.0    # prediction window multiplier
+r        = 0.25   # fraction of the window to inpaint
+w        = 1.0    # prediction window multiplier
 headroom_ratio    = 0.02   # crossfade overlap as fraction of sampling rate — synced from Max fade parameter
 
 stem_names         = ["bass", "drums", "guitar", "piano"]
@@ -202,7 +202,7 @@ def load_network(unused_addr):
     """OSC handler for /load_model — loads checkpoint and prepares for inference."""
     global latent_diffusion, stemidx_to_inpaint, steps, tensor, MSAProc
     global latent, mask, config, package_size, filename
-    global percentage, diffusion_sampler, diffusion_schedule, pr_win_mul
+    global r, diffusion_sampler, diffusion_schedule, w
     global _loading
     _loading = True
 
@@ -233,7 +233,7 @@ def load_network(unused_addr):
     steps              = cfg.audio_samples_logger.sampling_steps
 
     # Pre-compute inpainting mask and initial latent encoding
-    mask   = create_temporal_mask(mask, mask_ratio=percentage).to(device)
+    mask   = create_temporal_mask(mask, mask_ratio=r).to(device)
     latent = CAE.encode(tensor).unsqueeze(1)
 
     _loading = False
@@ -247,7 +247,7 @@ def load_network(unused_addr):
 def predict(*args):
     """Run one inpainting prediction cycle and stream results back to Max via OSC."""
     global latent_diffusion, tensor, waveforms, stems_to_inpaint, stemidx_to_inpaint
-    global steps, batch, package_size, percentage, config
+    global steps, batch, package_size, r, config
     global diffusion_sampler, diffusion_schedule, latent
     global _first_chunk_time, _last_chunk_time, _chunk_count
 
@@ -302,7 +302,7 @@ def predict(*args):
             mixture_latent = CAE.encode(tensor).unsqueeze(1)
             if verbose: timer.record_event("Mixture latent encoded")
 
-            start_idx = int(mixture_latent.size(-1) * (1 - pr_win_mul * percentage))
+            start_idx = int(mixture_latent.size(-1) * (1 - w * r))
             mixture_latent[:, :, :, start_idx:] = 0.0
 
             # Inject noise into the masked region of the stored latent
@@ -325,14 +325,14 @@ def predict(*args):
             if verbose: timer.record_event("Sampling done")
 
             # Update stored latent with the freshly inpainted region
-            start_idx = int(samples.size(-1) * (1 - percentage))
+            start_idx = int(samples.size(-1) * (1 - r))
             latent[:, :, :, start_idx:] = samples[:, :, :, start_idx:].clone()
 
         # Shift tensor and latent so the next batch's incoming data lands at correct positions,
         # then release the semaphore — decode and send don't touch shared state.
-        shift_size = int(tensor.size(-1) * percentage)
-        shift_tensor_data(tensor, percentage)
-        shift_tensor_data(latent, percentage)
+        shift_size = int(tensor.size(-1) * r)
+        shift_tensor_data(tensor, r)
+        shift_tensor_data(latent, r)
         if verbose:
             print(f"  Buffers shifted left by {shift_size} samples.  {_hms()}")
             timer.record_event("Buffers shifted")
@@ -342,8 +342,8 @@ def predict(*args):
         # Decode — uses only `samples` (local tensor), tensor/latent no longer needed
         total_length     = config['audio_samples_logger']['length']
         headroom_samples = int(headroom_ratio * config['audio_samples_logger']['sampling_rate'])
-        n_needed         = int(total_length * percentage) + headroom_samples
-        n_cols           = int(64 * percentage) + 1   # e.g. 0.25 → 17, 0.5 → 33
+        n_needed         = int(total_length * r) + headroom_samples
+        n_cols           = int(64 * r) + 1   # e.g. 0.25 → 17, 0.5 → 33
         samples_per_col  = total_length / 64           # 4134.375 — architectural constant
         expected_len     = int(n_cols * samples_per_col)
 
@@ -390,7 +390,7 @@ def predict(*args):
         if verbose: timer.record_event("Send complete")
         client.send_message("/server_predicted", True)
 
-        shift_tensor_data(generated_audio, percentage)
+        shift_tensor_data(generated_audio, r)
 
     except Exception as e:
         print(f"[PREDICT] ERROR: {e}")
@@ -408,14 +408,14 @@ message_queue = Queue()
 
 def process_message_queue():
     """Worker thread: dequeues incoming audio chunks and writes them into `tensor`."""
-    global tensor, config, percentage, pr_win_mul
+    global tensor, config, r, w
     while True:
         track_id, start_index, values = message_queue.get()
 
         depth    = tensor.size(-1)
-        # Target write window: [100 - (pr_win_mul+1)*pct, 100 - pct] of the buffer
-        start_idx  = int(depth * (1 - (pr_win_mul + 1) * percentage))
-        end_idx    = int(depth * (1 - percentage))
+        # Target write window: [100 - (w+1)*pct, 100 - pct] of the buffer
+        start_idx  = int(depth * (1 - (w + 1) * r))
+        end_idx    = int(depth * (1 - r))
         range_start = start_idx + start_index
         range_end   = range_start + len(values)
 
@@ -527,16 +527,16 @@ def buffer_handler(unused_addr, track_id, batch_id, start_index,
 # Tensor utilities
 # =============================================================================
 
-def shift_tensor_data(tensor: torch.Tensor, percentage: float):
-    """Shift the last dimension left by `percentage`, zero-filling the tail.
+def shift_tensor_data(tensor: torch.Tensor, r: float):
+    """Shift the last dimension left by `r`, zero-filling the tail.
 
     Used to slide the rolling mixture buffer and latent forward after each
     prediction cycle so the next window is positioned correctly.
     """
-    if not (0.0 <= percentage <= 1.0):
-        raise ValueError(f"percentage must be 0–1, got {percentage}")
+    if not (0.0 <= r <= 1.0):
+        raise ValueError(f"r must be 0–1, got {r}")
 
-    shift_size = int(tensor.size(-1) * percentage)
+    shift_size = int(tensor.size(-1) * r)
     if shift_size == 0:
         return
 
@@ -638,14 +638,14 @@ def update_package_size(unused_addr, new_package_size):
     print(f"Package size → {package_size}")
 
 
-def update_percentage(unused_addr, new_percentage):
-    """OSC /update_percentage — set the inpainting window as a fraction of buffer length."""
-    global percentage
-    if not (0.0 <= new_percentage <= 1.0):
-        print(f"Invalid percentage: {new_percentage}")
+def update_r(unused_addr, new_r):
+    """OSC /update_r — set the inpainting window as a fraction of buffer length."""
+    global r
+    if not (0.0 <= new_r <= 1.0):
+        print(f"Invalid r: {new_r}")
         return
-    percentage = float(new_percentage)
-    print(f"Percentage → {percentage}")
+    r = float(new_r)
+    print(f"r → {r}")
 
 
 def handle_verbose(unused_addr, state):
@@ -665,14 +665,14 @@ def update_headroom(unused_addr, ratio):
     print(f"Headroom ratio → {headroom_ratio}")
 
 
-def update_pr_win_mul(unused_addr, new_pr_win_mul):
-    """OSC /pr_win_mul — scale the prediction window relative to inpainting window."""
-    global pr_win_mul, mask
-    if new_pr_win_mul not in (-1.0, 0.0, 1.0):
-        print(f"Invalid pr_win_mul: {new_pr_win_mul} (must be -1, 0, or 1)")
+def update_w(unused_addr, new_w):
+    """OSC /w — scale the prediction window relative to inpainting window."""
+    global w, mask
+    if new_w not in (-1.0, 0.0, 1.0):
+        print(f"Invalid w: {new_w} (must be -1, 0, or 1)")
         return
-    pr_win_mul = float(new_pr_win_mul)
-    print(f"pr_win_mul → {pr_win_mul}")
+    w = float(new_w)
+    print(f"w → {w}")
 
 
 # =============================================================================
@@ -733,10 +733,10 @@ def start_server(ip, port):
         "/print":               print_tensor,
         "/packet_test":         packet_test_handler,
         "/update_package_size": update_package_size,
-        "/update_percentage":   update_percentage,
+        "/update_r":   update_r,
         "/update_fade":         update_headroom,
         "/predict_instruments": handle_predict_instruments,
-        "/pr_win_mul":          update_pr_win_mul,
+        "/w":          update_w,
         "/load_model":          load_network,
         "/predict":             predict,
         "/verbose":             handle_verbose,
