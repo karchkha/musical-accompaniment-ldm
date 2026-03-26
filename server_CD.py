@@ -754,6 +754,7 @@ def start_server(ip, port):
     sock.bind((ip, port))
     print(f"\nStarting server on {ip}:{port}  |  device: {device}")
     print("Server is running.\n")
+    client.send_message("/ready", True)  # send after bind — socket is now listening
     try:
         _raw_udp_listener(sock)
     except KeyboardInterrupt:
@@ -796,7 +797,5 @@ if __name__ == "__main__":
     client._sock.setblocking(True)
     client._sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4 * 1024 * 1024)
     print(f"\nClient: {args.client_ip}:{args.clientport}")
-
-    client.send_message("/ready", True)
 
     start_server(args.server_ip, args.serverport)
