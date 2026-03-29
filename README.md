@@ -19,18 +19,19 @@ We propose a framework for a real-time instrumental accompaniment and improvisat
 ---
 
 ## System Overview
-
-### Real-Time Sliding-Window Protocol
-
 <p align="center">
   <img src="figures/Real_time_MAX.drawio.png" width="40%"/>
 </p>
 
----
+A human musician (e.g., drummer) performs live while a front-end computer running MAX/MSP captures the incoming audio stream and communicates with a remote GPU server via Open Sound Control (OSC). The server hosts a diffusion-based generative model that receives the audio input and generates accompaniment complementary instrument (e.g., bass) in real time. The generated audio is returned to the MAX/MSP environment and mixed with the human performance to produce the final musical output.
+
+### Real-Time Sliding-Window Protocol
 
 <p align="center">
   <img src="figures/Real_time_graph.drawio.png" width="95%"/>
 </p>
+
+
 
 Real-time accompaniment is formulated as a sliding-window generation process over a fixed-length context of duration *T*. The window advances by *T·r* at each step, where *r* controls the step size. Three regimes are supported: **retrospective** (w=−1), **immediate** (w=0), and **lookahead** (w=1) prediction.
 
