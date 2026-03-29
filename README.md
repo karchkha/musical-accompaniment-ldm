@@ -20,7 +20,7 @@ We propose a framework for a real-time instrumental accompaniment and improvisat
 
 ## System Overview
 <p align="center">
-  <img src="figures/Real_time_MAX.drawio.png" width="40%"/>
+  <img src="figures/Real_time_MAX.drawio.png" width="60%"/>
 </p>
 
 A human musician (e.g., drummer) performs live while a front-end computer running MAX/MSP captures the incoming audio stream and communicates with a remote GPU server via Open Sound Control (OSC). The server hosts a diffusion-based generative model that receives the audio input and generates accompaniment complementary instrument (e.g., bass) in real time. The generated audio is returned to the MAX/MSP environment and mixed with the human performance to produce the final musical output.
