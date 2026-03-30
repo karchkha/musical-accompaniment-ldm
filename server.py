@@ -399,7 +399,7 @@ def predict(*args):
                 client._sock.sendto(
                     _make_osc_dgram("/" + stem_name, response_batch_id, chunk_idx, total_chunks, chunk),
                     dest)
-                # time.sleep(0.0001)  # brief pacing for remote server stability
+                time.sleep(0.0001)  # brief pacing for remote server stability
 
         if verbose: timer.record_event("Send complete")
         client.send_message("/server_predicted", True)
@@ -814,7 +814,16 @@ if __name__ == "__main__":
     # UDP client for sending results back to Max
     client = udp_client.SimpleUDPClient(args.client_ip, args.clientport)
     client._sock.setblocking(True)
-    client._sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4 * 1024 * 1024)
+    _requested_sndbuf = 4 * 1024 * 1024
+    client._sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, _requested_sndbuf)
+    _actual_sndbuf = client._sock.getsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF)
+    if _actual_sndbuf < _requested_sndbuf:
+        CHUNK_SLEEP = 0.0001
+        print(f"[WARN] SO_SNDBUF capped at {_actual_sndbuf // 1024}KB "
+              f"(requested {_requested_sndbuf // 1024}KB) — enabling chunk pacing ({CHUNK_SLEEP*1000:.1f}ms).")
+        print(f"       To remove cap on macOS: sudo sysctl -w kern.ipc.maxsockbuf={_requested_sndbuf * 2}")
+    else:
+        CHUNK_SLEEP = 0.0
     print(f"\nClient: {args.client_ip}:{args.clientport}")
 
     start_server(args.server_ip, args.serverport)
