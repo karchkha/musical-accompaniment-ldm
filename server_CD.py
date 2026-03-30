@@ -39,8 +39,6 @@ import matplotlib
 matplotlib.use("Agg")  # Non-GUI backend — safe for server use
 import matplotlib.pyplot as plt
 
-from pythonosc import dispatcher, osc_server, udp_client
-from pythonosc import osc_bundle_builder, osc_message_builder
 from pytorch_lightning import seed_everything
 from music2latent import EncoderDecoder
 
@@ -155,6 +153,26 @@ def _hms() -> str:
 # =============================================================================
 # Fast OSC datagram builder
 # =============================================================================
+
+def _send_osc(address: str, *args):
+    """Send a minimal OSC message (int / float / bool args) to Max."""
+    addr = address.encode() + b'\x00'
+    addr += b'\x00' * ((4 - len(addr) % 4) % 4)
+    type_tag = b','
+    payload  = b''
+    for a in args:
+        if isinstance(a, bool):
+            type_tag += b'T' if a else b'F'
+        elif isinstance(a, int):
+            type_tag += b'i'
+            payload += struct.pack('>i', a)
+        elif isinstance(a, float):
+            type_tag += b'f'
+            payload += struct.pack('>f', a)
+    type_tag += b'\x00'
+    type_tag += b'\x00' * ((4 - len(type_tag) % 4) % 4)
+    sock_out.sendto(addr + type_tag + payload, _dest)
+
 
 def _make_osc_dgram(address: str, batch_id: int, chunk_idx: int, total_chunks: int,
                     floats_chunk: np.ndarray) -> bytes:
@@ -276,7 +294,7 @@ def predict(*args):
     # Guard against concurrent predictions
     if not _predict_sem.acquire(blocking=False):
         print(f"[PREDICT] skipped — already running  batch={response_batch_id}  {_hms()}")
-        client.send_message("/batch_dropped", int(response_batch_id))
+        _send_osc("/batch_dropped", int(response_batch_id))
         return
 
     _sem_released = False
@@ -384,8 +402,6 @@ def predict(*args):
         fade_in_window = np.linspace(0, 1, headroom_samples)
 
         # Send each predicted stem back to Max as enumerated OSC chunks
-        dest = (client._address, client._port)
-
         for i, stem_name in enumerate(stem_names):
             if i not in stemidx_to_inpaint:
                 continue
@@ -405,13 +421,11 @@ def predict(*args):
             total_chunks = len(chunk_starts)
             for chunk_idx, j in enumerate(chunk_starts):
                 chunk = flatten_prediction[j : j + min(package_size, n_needed - j)]
-                client._sock.sendto(
+                sock_out.sendto(
                     _make_osc_dgram("/" + stem_name, response_batch_id, chunk_idx, total_chunks, chunk),
-                    dest)
+                    _dest)
 
         if verbose: timer.record_event("Send complete")
-
-        client.send_message("/server_predicted", True)
 
         shift_tensor_data(generated_audio, r)
 
@@ -650,13 +664,13 @@ def packet_test_handler(unused_addr, packet_size, *values):
     """OSC /packet_test — echo back a random float packet of the same size."""
     received_size = len(values)
     print(f"Received test packet with {received_size} floats")
-    bundle = osc_bundle_builder.OscBundleBuilder(osc_bundle_builder.IMMEDIATELY)
-    msg    = osc_message_builder.OscMessageBuilder(address="/packet_test_response")
-    msg.add_arg(received_size)
-    for _ in range(received_size):
-        msg.add_arg(float(np.random.rand()), arg_type="f")
-    bundle.add_content(msg.build())
-    client.send(bundle.build())
+    rand_vals = np.random.rand(received_size).astype(np.float32)
+    addr = b'/packet_test_response' + b'\x00'
+    addr += b'\x00' * ((4 - len(addr) % 4) % 4)
+    tag  = (',i' + 'f' * received_size).encode() + b'\x00'
+    tag += b'\x00' * ((4 - len(tag) % 4) % 4)
+    payload = struct.pack('>i', received_size) + rand_vals.astype('>f4').tobytes()
+    sock_out.sendto(addr + tag + payload, _dest)
 
 
 def update_package_size(unused_addr, new_package_size):
@@ -724,6 +738,27 @@ def _osc_read_string(data: bytes, offset: int):
     return s, offset
 
 
+def _osc_parse_args(data: bytes, offset: int):
+    """Parse OSC type tag + arguments into a Python list.  Handles i, f, d, T, F, s."""
+    tag, offset = _osc_read_string(data, offset)
+    args = []
+    for t in tag[1:]:          # skip leading ','
+        if t == ord('i'):
+            args.append(struct.unpack_from('>i', data, offset)[0]); offset += 4
+        elif t == ord('f'):
+            args.append(struct.unpack_from('>f', data, offset)[0]); offset += 4
+        elif t == ord('d'):    # 64-bit double — sent when C++ streams a double
+            args.append(float(struct.unpack_from('>d', data, offset)[0])); offset += 8
+        elif t == ord('T'):
+            args.append(True)
+        elif t == ord('F'):
+            args.append(False)
+        elif t == ord('s'):
+            s, offset = _osc_read_string(data, offset)
+            args.append(s.decode())
+    return args
+
+
 def _raw_udp_listener(sock):
     """Main receive loop — parses OSC packets directly without spawning threads."""
     while True:
@@ -743,14 +778,14 @@ def _raw_udp_listener(sock):
                 track_id = _AUDIO_ADDRESSES[addr_bytes]
                 buffer_handler(addr_bytes.decode(), (track_id,), batch_id, start_index, total_chunks, *values)
             else:
-                # Slow path: use pythonosc to parse args, dispatch to handler
-                from pythonosc.osc_message import OscMessage
-                msg = OscMessage(data)
-                handler = _CONTROL_HANDLERS.get(msg.address)
+                # Control path: parse address + args from raw bytes, dispatch
+                addr_str = addr_bytes.decode()
+                handler  = _CONTROL_HANDLERS.get(addr_str)
                 if handler:
-                    Thread(target=handler, args=(msg.address, *msg), daemon=True).start()
+                    parsed = _osc_parse_args(data, offset)
+                    Thread(target=handler, args=(addr_str, *parsed), daemon=True).start()
                 else:
-                    print(f"[UDP] unknown address: {msg.address}")
+                    print(f"[UDP] unknown address: {addr_str}")
         except Exception as e:
             print(f"[UDP] error: {e}")
 
@@ -778,7 +813,7 @@ def start_server(ip, port):
     sock.bind((ip, port))
     print(f"\nStarting server on {ip}:{port}  |  device: {device}")
     print("Server is running.\n")
-    client.send_message("/ready", True)  # send after bind — socket is now listening
+    _send_osc("/ready", True)  # send after bind — socket is now listening
     try:
         _raw_udp_listener(sock)
     except KeyboardInterrupt:
@@ -816,10 +851,11 @@ if __name__ == "__main__":
     if args.device is not None:
         device = args.device
 
-    # UDP client for sending results back to Max
-    client = udp_client.SimpleUDPClient(args.client_ip, args.clientport)
-    client._sock.setblocking(True)
-    client._sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4 * 1024 * 1024)
+    # Raw UDP socket for sending results back to Max
+    sock_out = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock_out.setblocking(True)
+    sock_out.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4 * 1024 * 1024)
+    _dest = (args.client_ip, args.clientport)
     print(f"\nClient: {args.client_ip}:{args.clientport}")
 
     start_server(args.server_ip, args.serverport)
