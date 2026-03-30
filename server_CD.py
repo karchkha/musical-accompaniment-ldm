@@ -424,6 +424,7 @@ def predict(*args):
                 sock_out.sendto(
                     _make_osc_dgram("/" + stem_name, response_batch_id, chunk_idx, total_chunks, chunk),
                     _dest)
+                time.sleep(0.0001)  # brief pacing for remote server stability
 
         if verbose: timer.record_event("Send complete")
 
