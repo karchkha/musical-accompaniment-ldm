@@ -5,8 +5,9 @@
 This repository contains the official PyTorch implementation accompanying the paper **"Towards Real-Time Musical Agents: Instrumental Accompaniment with Latent Diffusion Models and MAX/MSP"**.
 
 
-- [arXiv](link here)  
-- [Demo Page] [Demo page](https://consistency-separation.github.io/)
+- [arXiv](https://arxiv.org/abs/2604.07612)
+- [Demo Page](https://karchkha.github.io/musical-accompaniment-demo/)
+- [MAX/MSP Client](https://github.com/karchkha/multi_track)
 
 **Authors**: Tornike Karchkhadze, Shlomo Dubnov — University of California San Diego
 
@@ -245,4 +246,13 @@ This codebase builds upon the following repositories:
 If you use this work, please cite:
 
 ```bibtex
+@misc{karchkhadze2026realtime,
+  title={Towards Real-Time Human-AI Musical Co-Performance: Accompaniment Generation with Latent Diffusion Models and MAX/MSP},
+  author={Karchkhadze, Tornike and Dubnov, Shlomo},
+  year={2026},
+  eprint={2604.07612},
+  archivePrefix={arXiv},
+  primaryClass={cs.SD},
+  doi={10.48550/arXiv.2604.07612}
+}
 ```
