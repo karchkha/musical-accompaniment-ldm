@@ -184,7 +184,7 @@ def main():
         project= cfg.project_name,
         config=flattened_config,
         name=nowname,
-        entity='tornike_karchkha',
+        entity='anonymous',
     )
     wandb_logger._project = ""  # prevent naming experiment nama 2 time in logginf vals
 

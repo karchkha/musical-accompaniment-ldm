@@ -9,7 +9,7 @@ If launching returns 'Address already in use':
   Run 'sudo lsof -i:7000' (or whichever port) to find the occupying PID,
   then 'kill <PID>' to free it.
 
-Author: Tornike Karchkhadze  tkarchkhadze@ucsd.edu
+Author: Anonymous
 """
 
 # ── Standard library ──────────────────────────────────────────────────────────

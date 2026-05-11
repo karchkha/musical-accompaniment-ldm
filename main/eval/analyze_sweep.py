@@ -13,7 +13,7 @@ SWEEPS = {
     "cd":        "3e970woo",
 }
 HERE           = os.path.dirname(os.path.abspath(__file__))
-ENTITY_PROJECT = "tornike_karchkha/stream-music-gen"
+ENTITY_PROJECT = "anonymous/stream-music-gen"
 CACHE_FILE     = os.path.join(HERE, "sweep_data.json")
 OUT            = os.path.join(HERE, "sweep_analysis.png")
 T_s            = 264600 / 44100  # ~6 s
