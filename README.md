@@ -5,9 +5,6 @@
 This repository contains the official PyTorch implementation accompanying the paper **"Towards Real-Time Musical Agents: Instrumental Accompaniment with Latent Diffusion Models and MAX/MSP"**.
 
 
-- [Demo Page](anonymous)
-- [MAX/MSP Client](anonymous)
-
 **Authors**: Anonymous Authors
 
 ---
