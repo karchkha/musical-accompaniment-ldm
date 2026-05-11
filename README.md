@@ -5,11 +5,10 @@
 This repository contains the official PyTorch implementation accompanying the paper **"Towards Real-Time Musical Agents: Instrumental Accompaniment with Latent Diffusion Models and MAX/MSP"**.
 
 
-- [arXiv](https://arxiv.org/abs/2604.07612)
-- [Demo Page](https://karchkha.github.io/musical-accompaniment-demo/)
-- [MAX/MSP Client](https://github.com/karchkha/multi_track)
+- [Demo Page](anonymous)
+- [MAX/MSP Client](anonymous)
 
-**Authors**: Tornike Karchkhadze, Shlomo Dubnov — University of California San Diego
+**Authors**: Anonymous Authors
 
 ---
 
@@ -148,13 +147,13 @@ python main_audio_ctm.py --cfg configs/generation/CD/CD_latent_cond_gen_concat_i
 
 ## Checkpoints
 
-Checkpoints are available on Zenodo: [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19045462.svg)](https://doi.org/10.5281/zenodo.19045462)
+Checkpoints are available on anonymous file hosting (link to be provided upon acceptance).
 
 Download and extract into the `lightning_logs/` directory:
 
 ```bash
 cd lightning_logs
-wget https://zenodo.org/record/19045462/files/checkpoints.tar.gz
+wget <anonymous-checkpoint-url>/checkpoints.tar.gz
 tar -xzf checkpoints.tar.gz
 rm checkpoints.tar.gz
 ```
@@ -246,13 +245,5 @@ This codebase builds upon the following repositories:
 If you use this work, please cite:
 
 ```bibtex
-@misc{karchkhadze2026realtime,
-  title={Towards Real-Time Human-AI Musical Co-Performance: Accompaniment Generation with Latent Diffusion Models and MAX/MSP},
-  author={Karchkhadze, Tornike and Dubnov, Shlomo},
-  year={2026},
-  eprint={2604.07612},
-  archivePrefix={arXiv},
-  primaryClass={cs.SD},
-  doi={10.48550/arXiv.2604.07612}
-}
+Anonymous submission. Citation will be provided upon acceptance.
 ```
