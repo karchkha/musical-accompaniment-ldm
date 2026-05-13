@@ -148,6 +148,7 @@ Checkpoints are available on Zenodo: [![DOI](https://zenodo.org/badge/DOI/10.528
 Download and extract into the `lightning_logs/` directory:
 
 ```bash
+mkdir lightning_logs
 cd lightning_logs
 wget https://zenodo.org/record/19045462/files/checkpoints.tar.gz
 tar -xzf checkpoints.tar.gz
