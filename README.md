@@ -66,17 +66,12 @@ This project uses the [Slakh2100](http://www.slakh.com/) dataset processed at 44
 
 **Full dataset (~100 GB, 44100 Hz):**
 ```bash
-python main/prepare_dataset/prepare_slakh.py \
-    --splits train validation test \
-    --dest dataset/slakh2100_44100
+python main/prepare_dataset/prepare_slakh.py --splits train validation test --dest dataset/slakh2100_44100
 ```
 
 **Quick test with BabySlakh (~880 MB, 16 kHz — for verifying the pipeline only):**
 ```bash
-python main/prepare_dataset/prepare_slakh.py \
-    --splits train \
-    --dest dataset/slakh2100_44100_tiny \
-    --tiny
+python main/prepare_dataset/prepare_slakh.py --splits train --dest dataset/slakh2100_44100_tiny --tiny
 ```
 
 Tracks are assigned to splits by track number following the official Slakh2100 convention:
