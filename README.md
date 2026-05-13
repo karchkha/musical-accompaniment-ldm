@@ -155,6 +155,15 @@ tar -xzf checkpoints.tar.gz
 rm checkpoints.tar.gz
 ```
 
+**Windows (PowerShell):**
+```powershell
+mkdir lightning_logs
+cd lightning_logs
+curl -O https://zenodo.org/record/19045462/files/checkpoints.tar.gz
+tar -xzf checkpoints.tar.gz
+del checkpoints.tar.gz
+```
+
 The archive contains the two checkpoints used by the server configs:
 - `GEN_diffusion_model/.../checkpoints/last.ckpt` — masked diffusion model
 - `GEN_CD/.../checkpoints/last.ckpt` — masked consistency distillation model
@@ -182,6 +191,12 @@ Alternatively, you can use [Beat Transformer](https://github.com/zhaojw1998/Beat
 mkdir -p lightning_logs/stream_music_gen/eval_models/beat_transformer_models
 wget -O lightning_logs/stream_music_gen/eval_models/beat_transformer_models/fold_4_trf_param.pt \
   https://github.com/zhaojw1998/Beat-Transformer/raw/main/checkpoint/fold_4_trf_param.pt
+```
+
+**Windows (PowerShell):**
+```powershell
+mkdir -Force lightning_logs/stream_music_gen/eval_models/beat_transformer_models
+curl -o lightning_logs/stream_music_gen/eval_models/beat_transformer_models/fold_4_trf_param.pt https://github.com/zhaojw1998/Beat-Transformer/raw/main/checkpoint/fold_4_trf_param.pt
 ```
 
 **FAD** (vggish / pann / clap / encodec): weights are downloaded automatically on first run by the `audioldm_eval` library.
