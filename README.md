@@ -267,3 +267,15 @@ If you use this work, please cite:
   doi={10.48550/arXiv.2604.07612}
 }
 ```
+
+---
+
+## Contact
+
+For questions, please reach out to **Tornike Karchkhadze** — [tkarchkhadze@ucsd.edu](mailto:tkarchkhadze@ucsd.edu).
+
+---
+
+## License
+
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
